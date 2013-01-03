@@ -1,0 +1,31 @@
+From 5cb3b707de64182a52056d03f02f3fe4dc5a2b04 Mon Sep 17 00:00:00 2001
+From: hafidzduddin <hafidzduddin@gmail.com>
+Date: Wed, 21 Nov 2012 19:22:02 +0700
+Subject: [PATCH] dma: Drop GFP_COMP for DMA memory allocations
+
+---
+ kernel/arch/arm/mm/dma-mapping.c |    9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/kernel/arch/arm/mm/dma-mapping.c b/kernel/arch/arm/mm/dma-mapping.c
+index fa3d07d..7fc97fb 100644
+--- a/kernel/arch/arm/mm/dma-mapping.c
++++ b/kernel/arch/arm/mm/dma-mapping.c
+@@ -283,6 +283,15 @@ static void __dma_free_remap(void *cpu_addr, size_t size)
+ 	struct page *page;
+ 	void *addr;
+ 
++	/*
++	 * Following is a work-around (a.k.a. hack) to prevent pages
++	 * with __GFP_COMP being passed to split_page() which cannot
++	 * handle them. The real problem is that this flag probably
++	 * should be 0 on ARM as it is not supported on this
++	 * platform; see CONFIG_HUGETLBFS.
++	 */
++	gfp &= ~(__GFP_COMP);
++
+ 	*handle = ~0;
+ 	size = PAGE_ALIGN(size);
+ 
+-- 
+1.7.10

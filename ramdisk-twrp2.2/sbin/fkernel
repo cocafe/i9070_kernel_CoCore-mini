@@ -1,0 +1,5 @@
+#!/sbin/busybox sh
+
+# Flash kernel.bin.md5 quickly
+
+/sbin/busybox dd if=kernel.bin.md5 of=/dev/block/mmcblk0p15;

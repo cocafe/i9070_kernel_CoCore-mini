@@ -1,0 +1,32 @@
+From 1210e9de1799b7e6682326ed6cb502346ec326c2 Mon Sep 17 00:00:00 2001
+From: AdiPat <adithemagnificent@gmail.com>
+Date: Sun, 17 Jun 2012 23:02:13 +0530
+Subject: [PATCH] ARM: Add optimised swahb32() byteswap helper for v6 and
+ above
+
+---
+ arch/arm/include/asm/swab.h |    5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/include/asm/swab.h b/arch/arm/include/asm/swab.h
+index 9997ad2..32ee164 100644
+--- a/arch/arm/include/asm/swab.h
++++ b/arch/arm/include/asm/swab.h
+@@ -24,12 +24,13 @@
+ 
+ #if defined(__KERNEL__) && __LINUX_ARM_ARCH__ >= 6
+ 
+-static inline __attribute_const__ __u16 __arch_swab16(__u16 x)
++static inline __attribute_const__ __u32 __arch_swahb32(__u32 x)
+ {
+ 	__asm__ ("rev16 %0, %1" : "=r" (x) : "r" (x));
+ 	return x;
+ }
+-#define __arch_swab16 __arch_swab16
++#define __arch_swahb32 __arch_swahb32
++#define __arch_swab16(x) ((__u16)__arch_swahb32(x))
+ 
+ static inline __attribute_const__ __u32 __arch_swab32(__u32 x)
+ {
+-- 
+1.7.10

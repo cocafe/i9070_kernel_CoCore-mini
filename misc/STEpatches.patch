@@ -1,0 +1,521 @@
+From 949f9901e88a417116d23b389bcf4f427cf757bd Mon Sep 17 00:00:00 2001
+From: hayashikejinan <hayashikejinan@gmail.com>
+Date: Tue, 18 Sep 2012 20:13:15 +0900
+Subject: [PATCH] Latest st-ericcson patches
+
+cg2900: Fix for softirq warning during booting
+audio: Fix for choppy playback in Ubuntu pulse audio
+pm: Fix for prcmu pending interrupt during suspend
+pm: Fix for Ethernet doesn't work after suspend
+android: compilation failure with new version of svn
+pm: Fix for Basic Suspend/Resume to work
+usb: musb: SW workaround for USB host issue
+clock: ux500: add debugfs support for powerdebug
+
+Signed-off-by: hayashikejinan <hayashikejinan@gmail.com>
+---
+ kernel/arch/arm/mach-ux500/clock-db8500.c          |    4 +
+ kernel/arch/arm/mach-ux500/clock.c                 |  166 ++++++++++++++++++++
+ kernel/arch/arm/mach-ux500/clock.h                 |    5 +
+ kernel/arch/arm/mach-ux500/include/mach/context.h  |    3 +
+ kernel/arch/arm/mach-ux500/pm/context.c            |   27 +++-
+ kernel/arch/arm/mach-ux500/pm/suspend.c            |    4 +
+ .../driver/src/devicedrv/mali/Makefile.common      |    2 +-
+ .../driver/src/devicedrv/ump/Makefile.common       |    3 +-
+ .../drivers/staging/cg2900/bluetooth/cg2900_uart.c |    5 +-
+ kernel/drivers/usb/musb/musb_core.c                |   35 +++++
+ kernel/drivers/usb/musb/musb_debugfs.c             |    1 +
+ kernel/drivers/usb/musb/ux500.c                    |   12 ++
+ kernel/sound/soc/ux500/ux500_pcm.h                 |    7 +-
+ 13 files changed, 267 insertions(+), 7 deletions(-)
+
+diff --git a/kernel/arch/arm/mach-ux500/clock-db8500.c b/kernel/arch/arm/mach-ux500/clock-db8500.c
+index 08b478d..762b09b 100644
+--- a/kernel/arch/arm/mach-ux500/clock-db8500.c
++++ b/kernel/arch/arm/mach-ux500/clock-db8500.c
+@@ -1169,6 +1169,10 @@ int __init db8500_clk_init(void)
+ 		      ARRAY_SIZE(u8500_v2_sysclks));
+ 	clkdev_add_table(u8500_clocks,
+ 		      ARRAY_SIZE(u8500_clocks));
++#ifdef CONFIG_DEBUG_FS
++	clk_debugfs_add_table(u8500_v2_sysclks, ARRAY_SIZE(u8500_v2_sysclks));
++	clk_debugfs_add_table(u8500_clocks, ARRAY_SIZE(u8500_clocks));
++#endif
+ 	return 0;
+ }
+ 
+diff --git a/kernel/arch/arm/mach-ux500/clock.c b/kernel/arch/arm/mach-ux500/clock.c
+index 07db487..0f08b13 100644
+--- a/kernel/arch/arm/mach-ux500/clock.c
++++ b/kernel/arch/arm/mach-ux500/clock.c
+@@ -13,6 +13,12 @@
+ #include <linux/mfd/abx500/ux500_sysctrl.h>
+ #include <linux/mfd/dbx500-prcmu.h>
+ 
++#ifdef CONFIG_DEBUG_FS
++#include <linux/debugfs.h>
++#include <linux/uaccess.h>	/* for copy_from_user */
++static LIST_HEAD(clk_list);
++#endif
++
+ #include "clock.h"
+ #include "prcc.h"
+ 
+@@ -503,6 +509,166 @@ unsigned long clk_smp_twd_get_rate(struct clk *clk)
+ };
+ #endif
+ 
++#ifdef CONFIG_DEBUG_FS
++/*
++ *	debugfs support to trace clock tree hierarchy and attributes with
++ *	powerdebug
++ */
++static struct dentry *clk_debugfs_root;
++
++void __init clk_debugfs_add_table(struct clk_lookup *cl, size_t num)
++{
++	while (num--) {
++		/* Check that the clock has not been already registered */
++		if (!(cl->clk->list.prev != cl->clk->list.next))
++			list_add_tail(&cl->clk->list, &clk_list);
++
++		cl++;
++	}
++}
++
++static ssize_t usecount_dbg_read(struct file *file, char __user *buf,
++						  size_t size, loff_t *off)
++{
++	struct clk *clk = file->f_dentry->d_inode->i_private;
++	char cusecount[128];
++	unsigned int len;
++
++	len = sprintf(cusecount, "%u\n", clk->enabled);
++	return simple_read_from_buffer(buf, size, off, cusecount, len);
++}
++
++static ssize_t rate_dbg_read(struct file *file, char __user *buf,
++					  size_t size, loff_t *off)
++{
++	struct clk *clk = file->f_dentry->d_inode->i_private;
++	char crate[128];
++	unsigned int rate;
++	unsigned int len;
++
++	rate = clk_get_rate(clk);
++	len = sprintf(crate, "%u\n", rate);
++	return simple_read_from_buffer(buf, size, off, crate, len);
++}
++
++static const struct file_operations usecount_fops = {
++	.read = usecount_dbg_read,
++};
++
++static const struct file_operations set_rate_fops = {
++	.read = rate_dbg_read,
++};
++
++static struct dentry *clk_debugfs_register_dir(struct clk *c,
++						struct dentry *p_dentry)
++{
++	struct dentry *d, *clk_d;
++	const char *p = c->name;
++
++	if (!p)
++		p = "BUG";
++
++	clk_d = debugfs_create_dir(p, p_dentry);
++	if (!clk_d)
++		return NULL;
++
++	d = debugfs_create_file("usecount", S_IRUGO,
++				clk_d, c, &usecount_fops);
++	if (!d)
++		goto err_out;
++	d = debugfs_create_file("rate", S_IRUGO,
++				clk_d, c, &set_rate_fops);
++	if (!d)
++		goto err_out;
++	/*
++	 * TODO : not currently available in ux500
++	 * d = debugfs_create_x32("flags", S_IRUGO, clk_d, (u32 *)&c->flags);
++	 * if (!d)
++	 *	goto err_out;
++	 */
++
++	return clk_d;
++
++err_out:
++	debugfs_remove_recursive(clk_d);
++	return NULL;
++}
++
++static int clk_debugfs_register_one(struct clk *c)
++{
++	struct clk *pa = c->parent;
++	struct clk *bpa = c->bus_parent;
++
++	if (!(bpa && !pa)) {
++		c->dent = clk_debugfs_register_dir(c,
++				pa ? pa->dent : clk_debugfs_root);
++		if (!c->dent)
++			return -ENOMEM;
++	}
++
++	if (bpa) {
++		c->dent_bus = clk_debugfs_register_dir(c,
++				bpa->dent_bus ? bpa->dent_bus : bpa->dent);
++		if ((!c->dent_bus) &&  (c->dent)) {
++			debugfs_remove_recursive(c->dent);
++			c->dent = NULL;
++			return -ENOMEM;
++		}
++	}
++	return 0;
++}
++
++static int clk_debugfs_register(struct clk *c)
++{
++	int err;
++	struct clk *pa = c->parent;
++	struct clk *bpa = c->bus_parent;
++
++	if (pa && (!pa->dent && !pa->dent_bus)) {
++		err = clk_debugfs_register(pa);
++		if (err)
++			return err;
++	}
++
++	if (bpa && (!bpa->dent && !bpa->dent_bus)) {
++		err = clk_debugfs_register(bpa);
++		if (err)
++			return err;
++	}
++
++	if ((!c->dent) && (!c->dent_bus)) {
++		err = clk_debugfs_register_one(c);
++		if (err)
++			return err;
++	}
++	return 0;
++}
++
++static int __init clk_debugfs_init(void)
++{
++	struct clk *c;
++	struct dentry *d;
++	int err;
++
++	d = debugfs_create_dir("clock", NULL);
++	if (!d)
++		return -ENOMEM;
++	clk_debugfs_root = d;
++
++	list_for_each_entry(c, &clk_list, list) {
++		err = clk_debugfs_register(c);
++		if (err)
++			goto err_out;
++	}
++	return 0;
++err_out:
++	debugfs_remove_recursive(clk_debugfs_root);
++	return err;
++}
++
++late_initcall(clk_debugfs_init);
++#endif /* defined(CONFIG_DEBUG_FS) */
++
+ int __init clk_init(void)
+ {
+ 	if (cpu_is_u8500()) {
+diff --git a/kernel/arch/arm/mach-ux500/clock.h b/kernel/arch/arm/mach-ux500/clock.h
+index f96f998..2403e51 100644
+--- a/kernel/arch/arm/mach-ux500/clock.h
++++ b/kernel/arch/arm/mach-ux500/clock.h
+@@ -51,6 +51,10 @@ struct clk {
+ 	struct regulator *regulator;
+ 	struct clk *clock;
+ 	struct list_head list;
++#if defined(CONFIG_DEBUG_FS)
++	struct dentry		*dent;		/* For visible tree hierarchy */
++	struct dentry		*dent_bus;	/* For visible tree hierarchy */
++#endif
+ };
+ 
+ /**
+@@ -156,6 +160,7 @@ struct clkops {
+ 
+ #ifdef CONFIG_DEBUG_FS
+ int dbx500_clk_debug_init(struct clk **clks, int num);
++void clk_debugfs_add_table(struct clk_lookup *cl, size_t num);
+ #else
+ static inline int dbx500_clk_debug_init(struct clk **clks, int num)
+ {
+diff --git a/kernel/arch/arm/mach-ux500/include/mach/context.h b/kernel/arch/arm/mach-ux500/include/mach/context.h
+index 3d5a7d0..cf10c8b 100644
+--- a/kernel/arch/arm/mach-ux500/include/mach/context.h
++++ b/kernel/arch/arm/mach-ux500/include/mach/context.h
+@@ -36,6 +36,9 @@
+ void context_vape_save(void);
+ void context_vape_restore(void);
+ 
++void context_fsmc_save(void);
++void context_fsmc_restore(void);
++
+ void context_gpio_save(void);
+ void context_gpio_restore(void);
+ void context_gpio_restore_mux(void);
+diff --git a/kernel/arch/arm/mach-ux500/pm/context.c b/kernel/arch/arm/mach-ux500/pm/context.c
+index 86fb700..2437592 100644
+--- a/kernel/arch/arm/mach-ux500/pm/context.c
++++ b/kernel/arch/arm/mach-ux500/pm/context.c
+@@ -32,6 +32,8 @@
+ #include "../product.h"
+ #include "../prcc.h"
+ 
++#include "../board-pins-sleep-force.h"
++
+ #define GPIO_NUM_BANKS 9
+ #define GPIO_NUM_SAVE_REGISTERS 7
+ 
+@@ -191,6 +193,8 @@ struct context_gic_dist_cpu {
+ 
+ static u32 gpio_save[GPIO_NUM_BANKS][GPIO_NUM_SAVE_REGISTERS];
+ 
++void __iomem *fsmc_base_addr;
++static u32 fsmc_bcr0;
+ /*
+  * Stacks and stack pointers
+  */
+@@ -632,6 +636,26 @@ void context_vape_restore(void)
+ }
+ 
+ /*
++ * Save FSMC registers that will be reset
++ * during power save.
++ */
++void context_fsmc_save(void)
++{
++	fsmc_base_addr = ioremap_nocache(U8500_FSMC_BASE, 8);
++	fsmc_bcr0 = readl(fsmc_base_addr);
++}
++
++/*
++ * Restore FSMC registers that will be reset
++ * during power save.
++ */
++void context_fsmc_restore(void)
++{
++	writel(fsmc_bcr0, fsmc_base_addr);
++	iounmap(fsmc_base_addr);
++}
++
++/*
+  * Save GPIO registers that might be modified
+  * for power save reasons.
+  */
+@@ -647,6 +671,7 @@ void context_gpio_save(void)
+ 		gpio_save[i][4] = readl(gpio_bankaddr[i] + NMK_GPIO_DAT);
+ 		gpio_save[i][6] = readl(gpio_bankaddr[i] + NMK_GPIO_SLPC);
+ 	}
++
+ }
+ 
+ /*
+@@ -695,8 +720,8 @@ void context_gpio_restore(void)
+ 		writel(pull_down, gpio_bankaddr[i] + NMK_GPIO_DATC);
+ 
+ 		writel(gpio_save[i][6], gpio_bankaddr[i] + NMK_GPIO_SLPC);
+-
+ 	}
++
+ }
+ 
+ /*
+diff --git a/kernel/arch/arm/mach-ux500/pm/suspend.c b/kernel/arch/arm/mach-ux500/pm/suspend.c
+index f47b58b..1268977 100644
+--- a/kernel/arch/arm/mach-ux500/pm/suspend.c
++++ b/kernel/arch/arm/mach-ux500/pm/suspend.c
+@@ -88,6 +88,8 @@ static int suspend(bool do_deepsleep)
+ 
+ 	context_vape_save();
+ 
++	context_fsmc_save();
++
+ 	if (pins_force) {
+ 		/*
+ 		 * Save GPIO settings before applying power save
+@@ -163,6 +165,8 @@ static int suspend(bool do_deepsleep)
+ 
+ 	context_vape_restore();
+ 
++	context_fsmc_restore();
++
+ 	/* If GPIO woke us up then save the pins that caused the wake up */
+ 	ux500_pm_gpio_save_wake_up_status();
+ 
+diff --git a/kernel/drivers/gpu/mali/mali400ko/driver/src/devicedrv/mali/Makefile.common b/kernel/drivers/gpu/mali/mali400ko/driver/src/devicedrv/mali/Makefile.common
+index c2be3cf..e97a0b3 100644
+--- a/kernel/drivers/gpu/mali/mali400ko/driver/src/devicedrv/mali/Makefile.common
++++ b/kernel/drivers/gpu/mali/mali400ko/driver/src/devicedrv/mali/Makefile.common
+@@ -40,7 +40,7 @@ MALI_PLATFORM_FILE=platform/default/mali_platform.c
+ endif
+ 
+ # Get subversion revision number, fall back to only ${MALI_RELEASE_NAME} if no svn info is available
+-SVN_REV := $(shell (cd $(DRIVER_DIR); (svnversion | grep -qv exported && svnversion) || git svn info | grep '^Revision: '| sed -e 's/^Revision: //' ) 2>/dev/null )
++SVN_REV := $(shell (cd $(DRIVER_DIR); (svnversion | grep -qvE '(exported|Unversioned)' && svnversion) || git svn info | grep '^Revision: '| sed -e 's/^Revision: //' ) 2>/dev/null )
+ ifeq ($(SVN_REV),)
+ SVN_REV := $(MALI_RELEASE_NAME)
+ else
+diff --git a/kernel/drivers/gpu/mali/mali400ko/driver/src/devicedrv/ump/Makefile.common b/kernel/drivers/gpu/mali/mali400ko/driver/src/devicedrv/ump/Makefile.common
+index 9681e12..efe089e 100644
+--- a/kernel/drivers/gpu/mali/mali400ko/driver/src/devicedrv/ump/Makefile.common
++++ b/kernel/drivers/gpu/mali/mali400ko/driver/src/devicedrv/ump/Makefile.common
+@@ -14,7 +14,6 @@ SRC = $(UMP_FILE_PREFIX)common/ump_kernel_common.c \
+ 	$(UMP_FILE_PREFIX)common/ump_kernel_ref_drv.c
+ 
+ # Get subversion revision number, fall back to 0000 if no svn info is available
+-SVN_REV:=$(shell ((svnversion | grep -qv exported && echo -n 'Revision: ' && svnversion) || git svn info | sed -e 's/$$$$/M/' | grep '^Revision: ' || echo ${MALI_RELEASE_NAME}) 2>/dev/null | sed -e 's/^Revision: //')
+-
++SVN_REV:=$(shell ((svnversion | grep -qvE '(exported|Unversioned)' && echo -n 'Revision: ' && svnversion) || git svn info | sed -e 's/$$$$/M/' | grep '^Revision: ' || echo ${MALI_RELEASE_NAME}) 2>/dev/null | sed -e 's/^Revision: //')
+ EXTRA_CFLAGS += -DSVN_REV=$(SVN_REV)
+ EXTRA_CFLAGS += -DSVN_REV_STRING=\"$(SVN_REV)\"
+diff --git a/kernel/drivers/staging/cg2900/bluetooth/cg2900_uart.c b/kernel/drivers/staging/cg2900/bluetooth/cg2900_uart.c
+index 765ad48..bf386a1 100644
+--- a/kernel/drivers/staging/cg2900/bluetooth/cg2900_uart.c
++++ b/kernel/drivers/staging/cg2900/bluetooth/cg2900_uart.c
+@@ -2112,8 +2112,9 @@ static struct sk_buff *cg2900_hu_dequeue(struct hci_uart *hu)
+ 	struct sk_buff *skb;
+ 	struct uart_info *uart_info = dev_get_drvdata(hu->proto->dev);
+ 	unsigned long timeout_jiffies = get_sleep_timeout(uart_info);
++	unsigned long flags;
+ 
+-	spin_lock_bh(&(uart_info->transmission_lock));
++	spin_lock_irqsave(&(uart_info->transmission_lock), flags);
+ 
+ 	skb = skb_dequeue(&uart_info->tx_queue);
+ 
+@@ -2128,7 +2129,7 @@ static struct sk_buff *cg2900_hu_dequeue(struct hci_uart *hu)
+ 				&uart_info->sleep_work.work,
+ 				timeout_jiffies);
+ 
+-	spin_unlock_bh(&(uart_info->transmission_lock));
++	spin_unlock_irqrestore(&(uart_info->transmission_lock), flags);
+ 
+ 	if (BAUD_SENDING == uart_info->baud_rate_state && !skb)
+ 		finish_setting_baud_rate(hu);
+diff --git a/kernel/drivers/usb/musb/musb_core.c b/kernel/drivers/usb/musb/musb_core.c
+index 03512bb..9c84af2 100644
+--- a/kernel/drivers/usb/musb/musb_core.c
++++ b/kernel/drivers/usb/musb/musb_core.c
+@@ -1902,6 +1902,40 @@ void musb_dma_completion(struct musb *musb, u8 epnum, u8 transmit)
+ }
+ static DEVICE_ATTR(srp, 0644, NULL, musb_srp_store);
+ 
++static ssize_t
++ux500_set_extvbus(struct device *dev, struct device_attribute *attr,
++		const char *buf, size_t n)
++{
++	struct musb_hdrc_platform_data *plat = dev->platform_data;
++	unsigned short	extvbus;
++
++	if (sscanf(buf, "%hu", &extvbus) != 1
++			|| ((extvbus != 1) && (extvbus != 0))) {
++		dev_err(dev, "Invalid value EXTVBUS must be 1 or 0\n");
++		return -EINVAL;
++	}
++
++	plat->extvbus = extvbus;
++
++	return n;
++}
++
++static ssize_t
++ux500_get_extvbus(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct musb_hdrc_platform_data *plat = dev->platform_data;
++	int		extvbus;
++
++	/* FIXME get_vbus_status() is normally #defined as false...
++	 * and is effectively TUSB-specific.
++	 */
++	extvbus = plat->extvbus;
++
++	return sprintf(buf, "EXTVBUS is %s\n",
++			extvbus ? "on" : "off");
++}
++static DEVICE_ATTR(extvbus, 0644, ux500_get_extvbus, ux500_set_extvbus);
++
+ #endif /* CONFIG_USB_GADGET_MUSB_HDRC */
+ 
+ static struct attribute *musb_attributes[] = {
+@@ -1909,6 +1943,7 @@ void musb_dma_completion(struct musb *musb, u8 epnum, u8 transmit)
+ 	&dev_attr_vbus.attr,
+ #ifdef CONFIG_USB_GADGET_MUSB_HDRC
+ 	&dev_attr_srp.attr,
++	&dev_attr_extvbus.attr,
+ #endif
+ 	NULL
+ };
+diff --git a/kernel/drivers/usb/musb/musb_debugfs.c b/kernel/drivers/usb/musb/musb_debugfs.c
+index b0176e4..a11b098 100644
+--- a/kernel/drivers/usb/musb/musb_debugfs.c
++++ b/kernel/drivers/usb/musb/musb_debugfs.c
+@@ -82,6 +82,7 @@ struct musb_register_map {
+ 	{ "RxFIFOadd",		0x66,	16 },
+ 	{ "VControl",		0x68,	32 },
+ 	{ "HWVers",		0x6C,	16 },
++	{ "EXTVBUS",		0x70,	8 },
+ 	{ "EPInfo",		0x78,	8 },
+ 	{ "RAMInfo",		0x79,	8 },
+ 	{ "LinkInfo",		0x7A,	8 },
+diff --git a/kernel/drivers/usb/musb/ux500.c b/kernel/drivers/usb/musb/ux500.c
+index 8b1354d..a6e7089 100644
+--- a/kernel/drivers/usb/musb/ux500.c
++++ b/kernel/drivers/usb/musb/ux500.c
+@@ -449,6 +449,7 @@ static void ux500_musb_set_vbus(struct musb *musb, int is_on)
+ 	u8		devctl;
+ 	unsigned long timeout = jiffies + msecs_to_jiffies(1000);
+ 	int ret = 1;
++	struct musb_hdrc_platform_data *plat = musb->controller->platform_data;
+ #ifdef	CONFIG_USB_OTG_20
+ 	int val = 0;
+ #endif
+@@ -461,6 +462,17 @@ static void ux500_musb_set_vbus(struct musb *musb, int is_on)
+ 	val |= 0x1C;
+ 	musb_writeb(musb->mregs, MUSB_MISC, val);
+ #endif
++
++	/* Use EXTVBUS */
++	u8 busctl = musb_read_ulpi_buscontrol(musb->mregs);
++	if (plat->extvbus) {
++		busctl |= MUSB_ULPI_USE_EXTVBUS;
++		musb_write_ulpi_buscontrol(musb->mregs, busctl);
++	} else {
++		busctl &= ~MUSB_ULPI_USE_EXTVBUS;
++		musb_write_ulpi_buscontrol(musb->mregs, busctl);
++	}
++
+ 	devctl = musb_readb(musb->mregs, MUSB_DEVCTL);
+ 
+ 	if (is_on) {
+diff --git a/kernel/sound/soc/ux500/ux500_pcm.h b/kernel/sound/soc/ux500/ux500_pcm.h
+index 3d1ea4f..0386784 100644
+--- a/kernel/sound/soc/ux500/ux500_pcm.h
++++ b/kernel/sound/soc/ux500/ux500_pcm.h
+@@ -26,7 +26,12 @@
+ #define UX500_PLATFORM_MAX_CHANNELS 8
+ 
+ #define UX500_PLATFORM_PERIODS_BYTES_MIN	128
+-#define UX500_PLATFORM_PERIODS_BYTES_MAX	(64 * PAGE_SIZE)
++
++/* Our DMA supports maximum of 131070 bytes segment size
++ * So, we can support period_size of max 32767 frames
++ */
++#define UX500_PLATFORM_PERIODS_BYTES_MAX	131070
++
+ #define UX500_PLATFORM_PERIODS_MIN		2
+ #define UX500_PLATFORM_PERIODS_MAX		48
+ #define UX500_PLATFORM_BUFFER_BYTES_MAX		(2048 * PAGE_SIZE)
+-- 
+1.7.10

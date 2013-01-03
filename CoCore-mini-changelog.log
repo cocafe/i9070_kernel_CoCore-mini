@@ -1,0 +1,66 @@
+2013-01-03
+defconfig: bump to v1.4
+cpufreq: fix skywalker
+
+2013-01-02
+defconfig: bump to v1.3
+*** arm: add aes and sha1 (improve IPsec performance maybe?)***
+cpufreq: fix interactive
+cpufreq: add skywalker
+mm:	 increase max readahead 128kb -> 1024kb
+
+2013-01-01
+lib:	 add gun version memcopy
+sched:	 add 'nr_running' symbol
+cpufreq: merge smartass2
+cpufreq: add interactivex
+cpufreq: add interactive
+cpufreq: add lagfree
+cpufreq: add lazy
+bcm4330: wlan sleep mode PM_MAX -> PM_FAST
+defconfig: bump to v1.2
+
+2012-12-30
+ver: 	 bump to v0.9
+block: 	 add zen io scheduler
+mali: 	 disable state tracking
+mali: 	 mali l2 max reads 28kb -> 48kb
+cpufreq: add pegasusq
+cpufreq: disable ondemandx input
+
+2012-12-27
+block: 	add BFQv2r1 io scheduler
+block: 	add AS io scheduler
+block: 	add SIO,V(R) io scheduler
+block: 	set BFQ as default io scheduler
+block: 	add automatic readahead limit
+block/deadline: tweak the fifo
+asoc/ab8500: driver update (u8500 repo)
+arm/vfp: build with neon
+fs: 	add fsync control
+fs: 	enable ntfs
+fs: 	enable fuse fs
+fs: 	enable autofs auto4fs
+arm: 	add arm rwsem 
+jhash: 	update to jhash v3
+
+next: add cpufreq,makefile(homuhomu),ramdisk-cwm,bcm4330 pm_fast,jrcu,etc etc
+
+2012-12-25
+defconfig: u8500_CoCore_mini_defconfig
+defconfig: ver_tag: CoCore_mini
+defconfig: enable swap,log_buf_size=18
+mm: 	 SLAB -> SLUB
+cpuidle: deepest state 4 -> 5
+drivers/samsung: merge proper j4fs driver
+ramdisk: merge modified twrp 2.2.1
+block: 	 default io scheduler noop -> cfq
+arm: 	 enable ThumbEE
+arm: 	 enable ex+fast nwfpe 
+net/ipv4: add kconfig, enable westwood+,hybla,veno,hstcp
+rcu: 	 enable fast_no_rcu
+mali:	 enable l2 max reads writable in sysfs
+init/Kconfig: add gcc optimiaztion level configs
+makefile: add gcc optimiaztion level configs
+defconfig: enable optimize for size (-Os) (tmp,exp)
+

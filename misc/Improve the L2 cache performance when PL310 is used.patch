@@ -1,0 +1,79 @@
+From 25edf17185dabe5484a7d5c085a3b7612b8cee83 Mon Sep 17 00:00:00 2001
+From: Catalin Marinas <catalin.marinas@arm.com>
+Date: Tue, 31 Aug 2010 13:05:22 +0100
+Subject: [PATCH] ARM: Improve the L2 cache performance when PL310 is used
+
+With this L2 cache controller, the cache maintenance by PA and sync
+operations are atomic and do not require a "wait" loop. This patch
+conditionally defines the cache_wait() function.
+
+Since L2x0 cache controllers do not work with ARMv7 CPUs, the patch
+automatically enables CACHE_PL310 when only CPU_V7 is defined.
+
+Change-Id: I70fbf1023c128e0296e3d9ef3c9fe2b5bc59c7b9
+Signed-off-by: Catalin Marinas <catalin.marinas@arm.com>
+Signed-off-by: Trilok Soni <tsoni@codeaurora.org>
+---
+ arch/arm/mm/Kconfig      |    8 ++++++++
+ arch/arm/mm/cache-l2x0.c |   15 ++++++++++++---
+ 2 files changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm/mm/Kconfig b/arch/arm/mm/Kconfig
+index 460839e..a0ef4a3 100644
+--- a/arch/arm/mm/Kconfig
++++ b/arch/arm/mm/Kconfig
+@@ -790,6 +790,14 @@ config CACHE_L2X0
+ 	help
+ 	  This option enables the L2x0 PrimeCell.
+ 
++config CACHE_PL310
++	bool
++	depends on CACHE_L2X0
++	default y if CPU_V7 && !CPU_V6
++	help
++	  This option enables optimisations for the PL310 cache
++	  controller.
++
+ config CACHE_TAUROS2
+ 	bool "Enable the Tauros2 L2 cache controller"
+ 	depends on (ARCH_DOVE || ARCH_MMP)
+diff --git a/arch/arm/mm/cache-l2x0.c b/arch/arm/mm/cache-l2x0.c
+index 9982eb3..edb43ff 100644
+--- a/arch/arm/mm/cache-l2x0.c
++++ b/arch/arm/mm/cache-l2x0.c
+@@ -29,13 +29,22 @@
+ static DEFINE_SPINLOCK(l2x0_lock);
+ static uint32_t l2x0_way_mask;	/* Bitmask of active ways */
+ 
+-static inline void cache_wait(void __iomem *reg, unsigned long mask)
++static inline void cache_wait_way(void __iomem *reg, unsigned long mask)
+ {
+-	/* wait for the operation to complete */
++	/* wait for cache operation by line or way to complete */
+ 	while (readl_relaxed(reg) & mask)
+ 		;
+ }
+ 
++#ifdef CONFIG_CACHE_PL310
++static inline void cache_wait(void __iomem *reg, unsigned long mask)
++{
++	/* cache operations by line are atomic on PL310 */
++}
++#else
++#define cache_wait	cache_wait_way
++#endif
++
+ static inline void cache_sync(void)
+ {
+ 	void __iomem *base = l2x0_base;
+@@ -110,7 +119,7 @@ static inline void l2x0_inv_all(void)
+ 	/* invalidate all ways */
+ 	spin_lock_irqsave(&l2x0_lock, flags);
+ 	writel_relaxed(l2x0_way_mask, l2x0_base + L2X0_INV_WAY);
+-	cache_wait(l2x0_base + L2X0_INV_WAY, l2x0_way_mask);
++	cache_wait_way(l2x0_base + L2X0_INV_WAY, l2x0_way_mask);
+ 	cache_sync();
+ 	spin_unlock_irqrestore(&l2x0_lock, flags);
+ }
+-- 
+1.7.10

@@ -1,0 +1,896 @@
+From bae0a4f519cb690b6ebe45ae22d5c211d6f4b7a4 Mon Sep 17 00:00:00 2001
+From: hafidzduddin <hafidzduddin@gmail.com>
+Date: Wed, 21 Nov 2012 20:50:01 +0700
+Subject: [PATCH] Add Genlock
+
+---
+ kernel/Documentation/genlock.txt |  161 ++++++++++
+ kernel/drivers/base/Kconfig      |   12 +
+ kernel/drivers/base/Makefile     |    1 +
+ kernel/drivers/base/genlock.c    |  621 ++++++++++++++++++++++++++++++++++++++
+ kernel/include/linux/genlock.h   |   45 +++
+ 5 files changed, 840 insertions(+)
+ create mode 100644 kernel/Documentation/genlock.txt
+ create mode 100644 kernel/drivers/base/genlock.c
+ create mode 100644 kernel/include/linux/genlock.h
+
+diff --git a/kernel/Documentation/genlock.txt b/kernel/Documentation/genlock.txt
+new file mode 100644
+index 0000000..d3a44e2
+--- /dev/null
++++ b/kernel/Documentation/genlock.txt
+@@ -0,0 +1,161 @@
++Introduction
++
++'genlock' is an in-kernel API and optional userspace interface for a generic
++cross-process locking mechanism. The API is designed for situations where
++multiple user space processes and/or kernel drivers need to coordinate access
++to a shared resource, such as a graphics buffer. The API was designed with
++graphics buffers in mind, but is sufficiently generic to allow it to be
++independently used with different types of resources. The chief advantage
++of genlock over other cross-process locking mechanisms is that the resources
++can be accessed by both userspace and kernel drivers which allows resources
++to be locked or unlocked by asynchronous events in the kernel without the
++intervention of user space.
++
++As an example, consider a graphics buffer that is shared between a rendering
++application and a compositing window manager. The application renders into a
++buffer. That buffer is reused by the compositing window manager as a texture.
++To avoid corruption, access to the buffer needs to be restricted so that one
++is not drawing on the surface while the other is reading. Locks can be
++explicitly added between the rendering stages in the processes, but explicit
++locks require that the application wait for rendering and purposely release the
++lock. An implicit release triggered by an asynchronous event from the GPU
++kernel driver, however, will let execution continue without requiring the
++intercession of user space.
++
++SW Goals
++
++The genlock API implements exclusive write locks and shared read locks meaning
++that there can only be one writer at a time, but multiple readers. Processes
++that are unable to acquire a lock can be optionally blocked until the resource
++becomes available.
++
++Locks are shared between processes. Each process will have its own private
++instance for a lock known as a handle. Handles can be shared between user
++space and kernel space to allow a kernel driver to unlock or lock a buffer
++on behalf of a user process.
++
++Kernel API
++
++Access to the genlock API can either be via the in-kernel API or via an
++optional character device (/dev/genlock). The character device is primarily
++to be used for legacy resource sharing APIs that cannot be easily changed.
++New resource sharing APIs from this point should implement a scheme specific
++wrapper for locking.
++
++To create or attach to an existing lock, a process or kernel driver must first
++create a handle. Each handle is linked to a single lock at any time. An entityi
++may have multiple handles, each associated with a different lock. Once a handle
++has been created, the owner may create a new lock or attach an existing lock
++that has been exported from a different handle.
++
++Once the handle has a lock attached, the owning process may attempt to lock the
++buffer for read or write. Write locks are exclusive, meaning that only one
++process may acquire it at any given time. Read locks are shared, meaning that
++multiple readers can hold the lock at the same time. Attempts to acquire a read
++lock with a writer active or a write lock with one or more readers or writers
++active will typically cause the process to block until the lock is acquired.
++When the lock is released, all waiting processes will be woken up. Ownership
++of the lock is reference counted, meaning that any one owner can "lock"
++multiple times. The lock will only be released from the owner when all the
++references to the lock are released via unlock.
++
++The owner of a write lock may atomically convert the lock into a read lock
++(which will wake up other processes waiting for a read lock) without first
++releasing the lock. The owner would simply issue a new request for a read lock.
++However, the owner of a read lock cannot convert it into a write lock in the
++same manner. To switch from a read lock to a write lock, the owner must
++release the lock and then try to reacquire it.
++
++These are the in-kernel API calls that drivers can use to create and
++manipulate handles and locks. Handles can either be created and managed
++completely inside of kernel space, or shared from user space via a file
++descriptor.
++
++* struct genlock_handle *genlock_get_handle(void)
++Create a new handle.
++
++* struct genlock_handle * genlock_get_handle_fd(int fd)
++Given a valid file descriptor, return the handle associated with that
++descriptor.
++
++* void genlock_put_handle(struct genlock_handle *)
++Release a handle.
++
++* struct genlock * genlock_create_lock(struct genlock_handle *)
++Create a new lock and attach it to the handle.
++
++* struct genlock * genlock_attach_lock(struct genlock_handle *handle, int fd)
++Given a valid file descriptor, get the lock associated with it and attach it to
++the handle.
++
++* void genlock_release_lock(struct genlock_handle *)
++Release a lock attached to a handle.
++
++* int genlock_lock(struct genlock_handle *, int op, int flags, u32 timeout)
++Lock or unlock the lock attached to the handle. A zero timeout value will
++be treated just like if the GENOCK_NOBLOCK flag is passed; if the lock
++can be acquired without blocking then do so otherwise return -EAGAIN.
++Function returns -ETIMEDOUT if the timeout expired or 0 if the lock was
++acquired.
++
++* int genlock_wait(struct genloc_handle *, u32 timeout)
++Wait for a lock held by the handle to go to the unlocked state. A non-zero
++timeout value must be passed. Returns -ETIMEDOUT if the timeout expired or
++0 if the lock is in an unlocked state.
++
++Character Device
++
++Opening an instance to the /dev/genlock character device will automatically
++create a new handle. All ioctl functions with the exception of NEW and
++RELEASE use the following parameter structure:
++
++struct genlock_lock {
++	int fd; /* Returned by EXPORT, used by ATTACH */
++	int op;	/* Used by LOCK */
++	int flags;	/* used by LOCK */
++	u32 timeout;	/* Used by LOCK and WAIT */
++}
++
++*GENLOCK_IOC_NEW
++Create a new lock and attaches it to the handle. Returns -EINVAL if the handle
++already has a lock attached (use GENLOCK_IOC_RELEASE to remove it). Returns
++-ENOMEM if the memory for the lock can not be allocated. No data is passed
++from the user for this ioctl.
++
++*GENLOCK_IOC_EXPORT
++Export the currently attached lock to a file descriptor. The file descriptor
++is returned in genlock_lock.fd.
++
++*GENLOCK_IOC_ATTACH
++Attach an exported lock file descriptor to the current handle. Return -EINVAL
++if the handle already has a lock attached (use GENLOCK_IOC_RELEASE to remove
++it). Pass the file descriptor in genlock_lock.fd.
++
++*GENLOCK_IOC_LOCK
++Lock or unlock the attached lock. Pass the desired operation in
++genlock_lock.op:
++ * GENLOCK_WRLOCK - write lock
++ * GENLOCK_RDLOCK - read lock
++ * GENLOCK_UNLOCK - unlock an existing lock
++
++Pass flags in genlock_lock.flags:
++ * GENLOCK_NOBLOCK - Do not block if the lock is already taken
++
++Pass a timeout value in milliseconds in genlock_lock.timeout.
++genlock_lock.flags and genlock_lock.timeout are not used for UNLOCK.
++Returns -EINVAL if no lock is attached, -EAGAIN if the lock is taken and
++NOBLOCK is specified or if the timeout value is zero, -ETIMEDOUT if the timeout
++expires or 0 if the lock was successful.
++
++* GENLOCK_IOC_WAIT
++Wait for the lock attached to the handle to be released (i.e. goes to unlock).
++This is mainly used for a thread that needs to wait for a peer to release a
++lock on the same shared handle. A non-zero timeout value in milliseconds is
++passed in genlock_lock.timeout. Returns 0 when the lock has been released,
++-EINVAL if a zero timeout is passed, or -ETIMEDOUT if the timeout expires.
++
++* GENLOCK_IOC_RELEASE
++Use this to release an existing lock. This is useful if you wish to attach a
++different lock to the same handle. You do not need to call this under normal
++circumstances; when the handle is closed the reference to the lock is released.
++No data is passed from the user for this ioctl.
+diff --git a/kernel/drivers/base/Kconfig b/kernel/drivers/base/Kconfig
+index 63983b5..9791747 100644
+--- a/kernel/drivers/base/Kconfig
++++ b/kernel/drivers/base/Kconfig
+@@ -172,4 +172,16 @@ config SYS_HYPERVISOR
+ config SYS_SOC
+ 	bool
+ 
++config GENLOCK
++	bool "Enable a generic cross-process locking mechanism"
++	depends on ANON_INODES
++	help
++	  Enable a generic cross-process locking API to provide 	  protection for shared memory objects such as graphics 	  buffers.
++
++config GENLOCK_MISCDEVICE
++	bool "Enable a misc-device for userspace to access the genlock engine"
++	depends on GENLOCK
++	help
++	  Create a miscdevice for the purposes of allowing userspace 		  to create and interact with locks created using genlock.
++
+ endmenu
+diff --git a/kernel/drivers/base/Makefile b/kernel/drivers/base/Makefile
+index 263f700..f82bb82 100644
+--- a/kernel/drivers/base/Makefile
++++ b/kernel/drivers/base/Makefile
+@@ -8,6 +8,7 @@ obj-$(CONFIG_DEVTMPFS)	+= devtmpfs.o
+ obj-y			+= power/
+ obj-$(CONFIG_HAS_DMA)	+= dma-mapping.o
+ obj-$(CONFIG_HAVE_GENERIC_DMA_COHERENT) += dma-coherent.o
++obj-$(CONFIG_GENLOCK)	+= genlock.o
+ obj-$(CONFIG_ISA)	+= isa.o
+ obj-$(CONFIG_FW_LOADER)	+= firmware_class.o
+ obj-$(CONFIG_NUMA)	+= node.o
+diff --git a/kernel/drivers/base/genlock.c b/kernel/drivers/base/genlock.c
+new file mode 100644
+index 0000000..ee4bec9
+--- /dev/null
++++ b/kernel/drivers/base/genlock.c
+@@ -0,0 +1,621 @@
++/* Copyright (c) 2011, Code Aurora Forum. All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 and
++ * only version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/fb.h>
++#include <linux/slab.h>
++#include <linux/module.h>
++#include <linux/list.h>
++#include <linux/file.h>
++#include <linux/sched.h>
++#include <linux/fs.h>
++#include <linux/wait.h>
++#include <linux/uaccess.h>
++#include <linux/anon_inodes.h>
++#include <linux/miscdevice.h>
++#include <linux/genlock.h>
++#include <linux/hardirq.h>
++
++/* Lock states - can either be unlocked, held as an exclusive write lock or a
++ * shared read lock
++ */
++
++#define _UNLOCKED 0
++#define _RDLOCK  GENLOCK_RDLOCK
++#define _WRLOCK GENLOCK_WRLOCK
++
++struct genlock {
++	struct list_head active;  /* List of handles holding lock */
++	spinlock_t lock;          /* Spinlock to protect the lock internals */
++	wait_queue_head_t queue;  /* Holding pen for processes pending lock */
++	struct file *file;        /* File structure for exported lock */
++	int state;                /* Current state of the lock */
++};
++
++struct genlock_handle {
++	struct genlock *lock;     /* Lock currently attached to the handle */
++	struct list_head entry;   /* List node for attaching to a lock */
++	struct file *file;        /* File structure associated with handle */
++	int active;		  /* Number of times the active lock has been
++				     taken */
++};
++
++/*
++ * Release the genlock object. Called when all the references to
++ * the genlock file descriptor are released
++ */
++
++static int genlock_release(struct inode *inodep, struct file *file)
++{
++	kfree(file->private_data);
++	return 0;
++}
++
++static const struct file_operations genlock_fops = {
++	.release = genlock_release,
++};
++
++/**
++ * genlock_create_lock - Create a new lock
++ * @handle - genlock handle to attach the lock to
++ *
++ * Returns: a pointer to the genlock
++ */
++
++struct genlock *genlock_create_lock(struct genlock_handle *handle)
++{
++	struct genlock *lock;
++
++	if (handle->lock != NULL)
++		return ERR_PTR(-EINVAL);
++
++	lock = kzalloc(sizeof(*lock), GFP_KERNEL);
++	if (lock == NULL)
++		return ERR_PTR(-ENOMEM);
++
++	INIT_LIST_HEAD(&lock->active);
++	init_waitqueue_head(&lock->queue);
++	spin_lock_init(&lock->lock);
++
++	lock->state = _UNLOCKED;
++
++	/*
++	 * Create an anonyonmous inode for the object that can exported to
++	 * other processes
++	 */
++
++	lock->file = anon_inode_getfile("genlock", &genlock_fops,
++		lock, O_RDWR);
++
++	/* Attach the new lock to the handle */
++	handle->lock = lock;
++
++	return lock;
++}
++EXPORT_SYMBOL(genlock_create_lock);
++
++/*
++ * Get a file descriptor reference to a lock suitable for sharing with
++ * other processes
++ */
++
++static int genlock_get_fd(struct genlock *lock)
++{
++	int ret;
++
++	if (!lock->file)
++		return -EINVAL;
++
++	ret = get_unused_fd_flags(0);
++	if (ret < 0)
++		return ret;
++	fd_install(ret, lock->file);
++	return ret;
++}
++
++/**
++ * genlock_attach_lock - Attach an existing lock to a handle
++ * @handle - Pointer to a genlock handle to attach the lock to
++ * @fd - file descriptor for the exported lock
++ *
++ * Returns: A pointer to the attached lock structure
++ */
++
++struct genlock *genlock_attach_lock(struct genlock_handle *handle, int fd)
++{
++	struct file *file;
++
++	if (handle->lock != NULL)
++		return ERR_PTR(-EINVAL);
++
++	file = fget(fd);
++	if (file == NULL)
++		return ERR_PTR(-EBADF);
++
++	handle->lock = file->private_data;
++
++	return handle->lock;
++}
++EXPORT_SYMBOL(genlock_attach_lock);
++
++/* Helper function that returns 1 if the specified handle holds the lock */
++
++static int handle_has_lock(struct genlock *lock, struct genlock_handle *handle)
++{
++	struct genlock_handle *h;
++
++	list_for_each_entry(h, &lock->active, entry) {
++		if (h == handle)
++			return 1;
++	}
++
++	return 0;
++}
++
++/* If the lock just became available, signal the next entity waiting for it */
++
++static void _genlock_signal(struct genlock *lock)
++{
++	if (list_empty(&lock->active)) {
++		/* If the list is empty, then the lock is free */
++		lock->state = _UNLOCKED;
++		/* Wake up the first process sitting in the queue */
++		wake_up(&lock->queue);
++	}
++}
++
++/* Attempt to release the handle's ownership of the lock */
++
++static int _genlock_unlock(struct genlock *lock, struct genlock_handle *handle)
++{
++	int ret = -EINVAL;
++	unsigned long irqflags;
++
++	spin_lock_irqsave(&lock->lock, irqflags);
++
++	if (lock->state == _UNLOCKED)
++		goto done;
++
++	/* Make sure this handle is an owner of the lock */
++	if (!handle_has_lock(lock, handle))
++		goto done;
++
++	/* If the handle holds no more references to the lock then
++	   release it (maybe) */
++
++	if (--handle->active == 0) {
++		list_del(&handle->entry);
++		_genlock_signal(lock);
++	}
++
++	ret = 0;
++
++done:
++	spin_unlock_irqrestore(&lock->lock, irqflags);
++	return ret;
++}
++
++/* Attempt to acquire the lock for the handle */
++
++static int _genlock_lock(struct genlock *lock, struct genlock_handle *handle,
++	int op, int flags, uint32_t timeout)
++{
++	unsigned long irqflags;
++	int ret = 0;
++	unsigned int ticks = msecs_to_jiffies(timeout);
++
++	spin_lock_irqsave(&lock->lock, irqflags);
++
++	/* Sanity check - no blocking locks in a debug context. Even if it
++	 * succeed to not block, the mere idea is too dangerous to continue
++	 */
++
++	if (in_interrupt() && !(flags & GENLOCK_NOBLOCK))
++		BUG();
++
++	/* Fast path - the lock is unlocked, so go do the needful */
++
++	if (lock->state == _UNLOCKED)
++		goto dolock;
++
++	if (handle_has_lock(lock, handle)) {
++
++		/*
++		 * If the handle already holds the lock and the type matches,
++		 * then just increment the active pointer. This allows the
++		 * handle to do recursive locks
++		 */
++
++		if (lock->state == op) {
++			handle->active++;
++			goto done;
++		}
++
++		/*
++		 * If the handle holds a write lock then the owner can switch
++		 * to a read lock if they want. Do the transition atomically
++		 * then wake up any pending waiters in case they want a read
++		 * lock too.
++		 */
++
++		if (op == _RDLOCK && handle->active == 1) {
++			lock->state = _RDLOCK;
++			wake_up(&lock->queue);
++			goto done;
++		}
++
++		/*
++		 * Otherwise the user tried to turn a read into a write, and we
++		 * don't allow that.
++		 */
++
++		ret = -EINVAL;
++		goto done;
++	}
++
++	/*
++	 * If we request a read and the lock is held by a read, then go
++	 * ahead and share the lock
++	 */
++
++	if (op == GENLOCK_RDLOCK && lock->state == _RDLOCK)
++		goto dolock;
++
++	/* Treat timeout 0 just like a NOBLOCK flag and return if the
++	   lock cannot be aquired without blocking */
++
++	if (flags & GENLOCK_NOBLOCK || timeout == 0) {
++		ret = -EAGAIN;
++		goto done;
++	}
++
++	/* Wait while the lock remains in an incompatible state */
++
++	while (lock->state != _UNLOCKED) {
++		unsigned int elapsed;
++
++		spin_unlock_irqrestore(&lock->lock, irqflags);
++
++		elapsed = wait_event_interruptible_timeout(lock->queue,
++			lock->state == _UNLOCKED, ticks);
++
++		spin_lock_irqsave(&lock->lock, irqflags);
++
++		if (elapsed <= 0) {
++			ret = (elapsed < 0) ? elapsed : -ETIMEDOUT;
++			goto done;
++		}
++
++		ticks = elapsed;
++	}
++
++dolock:
++	/* We can now get the lock, add ourselves to the list of owners */
++
++	list_add_tail(&handle->entry, &lock->active);
++	lock->state = op;
++	handle->active = 1;
++
++done:
++	spin_unlock_irqrestore(&lock->lock, irqflags);
++	return ret;
++
++}
++
++/**
++ * genlock_lock - Acquire or release a lock
++ * @handle - pointer to the genlock handle that is requesting the lock
++ * @op - the operation to perform (RDLOCK, WRLOCK, UNLOCK)
++ * @flags - flags to control the operation
++ * @timeout - optional timeout to wait for the lock to come free
++ *
++ * Returns: 0 on success or error code on failure
++ */
++
++int genlock_lock(struct genlock_handle *handle, int op, int flags,
++	uint32_t timeout)
++{
++	struct genlock *lock = handle->lock;
++	int ret = 0;
++
++	if (lock == NULL)
++		return -EINVAL;
++
++	switch (op) {
++	case GENLOCK_UNLOCK:
++		ret = _genlock_unlock(lock, handle);
++		break;
++	case GENLOCK_RDLOCK:
++	case GENLOCK_WRLOCK:
++		ret = _genlock_lock(lock, handle, op, flags, timeout);
++		break;
++	default:
++		ret = -EINVAL;
++		break;
++	}
++
++	return ret;
++}
++EXPORT_SYMBOL(genlock_lock);
++
++/**
++ * genlock_wait - Wait for the lock to be released
++ * @handle - pointer to the genlock handle that is waiting for the lock
++ * @timeout - optional timeout to wait for the lock to get released
++ */
++
++int genlock_wait(struct genlock_handle *handle, uint32_t timeout)
++{
++	struct genlock *lock = handle->lock;
++	unsigned long irqflags;
++	int ret = 0;
++	unsigned int ticks = msecs_to_jiffies(timeout);
++
++	if (lock == NULL)
++		return -EINVAL;
++
++	spin_lock_irqsave(&lock->lock, irqflags);
++
++	/*
++	 * if timeout is 0 and the lock is already unlocked, then success
++	 * otherwise return -EAGAIN
++	 */
++
++	if (timeout == 0) {
++		ret = (lock->state == _UNLOCKED) ? 0 : -EAGAIN;
++		goto done;
++	}
++
++	while (lock->state != _UNLOCKED) {
++		unsigned int elapsed;
++
++		spin_unlock_irqrestore(&lock->lock, irqflags);
++
++		elapsed = wait_event_interruptible_timeout(lock->queue,
++			lock->state == _UNLOCKED, ticks);
++
++		spin_lock_irqsave(&lock->lock, irqflags);
++
++		if (elapsed <= 0) {
++			ret = (elapsed < 0) ? elapsed : -ETIMEDOUT;
++			break;
++		}
++
++		ticks = elapsed;
++	}
++
++done:
++	spin_unlock_irqrestore(&lock->lock, irqflags);
++	return ret;
++}
++
++/**
++ * genlock_release_lock - Release a lock attached to a handle
++ * @handle - Pointer to the handle holding the lock
++ */
++
++void genlock_release_lock(struct genlock_handle *handle)
++{
++	unsigned long flags;
++
++	if (handle == NULL || handle->lock == NULL)
++		return;
++
++	spin_lock_irqsave(&handle->lock->lock, flags);
++
++	/* If the handle is holding the lock, then force it closed */
++
++	if (handle_has_lock(handle->lock, handle)) {
++		list_del(&handle->entry);
++		_genlock_signal(handle->lock);
++	}
++	spin_unlock_irqrestore(&handle->lock->lock, flags);
++
++	fput(handle->lock->file);
++	handle->lock = NULL;
++	handle->active = 0;
++}
++EXPORT_SYMBOL(genlock_release_lock);
++
++/*
++ * Release function called when all references to a handle are released
++ */
++
++static int genlock_handle_release(struct inode *inodep, struct file *file)
++{
++	struct genlock_handle *handle = file->private_data;
++
++	genlock_release_lock(handle);
++	kfree(handle);
++
++	return 0;
++}
++
++static const struct file_operations genlock_handle_fops = {
++	.release = genlock_handle_release
++};
++
++/*
++ * Allocate a new genlock handle
++ */
++
++static struct genlock_handle *_genlock_get_handle(void)
++{
++	struct genlock_handle *handle = kzalloc(sizeof(*handle), GFP_KERNEL);
++	if (handle == NULL)
++		return ERR_PTR(-ENOMEM);
++
++	return handle;
++}
++
++/**
++ * genlock_get_handle - Create a new genlock handle
++ *
++ * Returns: A pointer to a new genlock handle
++ */
++
++struct genlock_handle *genlock_get_handle(void)
++{
++	struct genlock_handle *handle = _genlock_get_handle();
++	if (IS_ERR(handle))
++		return handle;
++
++	handle->file = anon_inode_getfile("genlock-handle",
++		&genlock_handle_fops, handle, O_RDWR);
++
++	return handle;
++}
++EXPORT_SYMBOL(genlock_get_handle);
++
++/**
++ * genlock_put_handle - release a reference to a genlock handle
++ * @handle - A pointer to the handle to release
++ */
++
++void genlock_put_handle(struct genlock_handle *handle)
++{
++	if (handle)
++		fput(handle->file);
++}
++EXPORT_SYMBOL(genlock_put_handle);
++
++/**
++ * genlock_get_handle_fd - Get a handle reference from a file descriptor
++ * @fd - The file descriptor for a genlock handle
++ */
++
++struct genlock_handle *genlock_get_handle_fd(int fd)
++{
++	struct file *file = fget(fd);
++
++	if (file == NULL)
++		return ERR_PTR(-EINVAL);
++
++	return file->private_data;
++}
++EXPORT_SYMBOL(genlock_get_handle_fd);
++
++#ifdef CONFIG_GENLOCK_MISCDEVICE
++
++static long genlock_dev_ioctl(struct file *filep, unsigned int cmd,
++	unsigned long arg)
++{
++	struct genlock_lock param;
++	struct genlock_handle *handle = filep->private_data;
++	struct genlock *lock;
++	int ret;
++
++	switch (cmd) {
++	case GENLOCK_IOC_NEW: {
++		lock = genlock_create_lock(handle);
++		if (IS_ERR(lock))
++			return PTR_ERR(lock);
++
++		return 0;
++	}
++	case GENLOCK_IOC_EXPORT: {
++		if (handle->lock == NULL)
++			return -EINVAL;
++
++		ret = genlock_get_fd(handle->lock);
++		if (ret < 0)
++			return ret;
++
++		param.fd = ret;
++
++		if (copy_to_user((void __user *) arg, &param,
++			sizeof(param)))
++			return -EFAULT;
++
++		return 0;
++		}
++	case GENLOCK_IOC_ATTACH: {
++		if (copy_from_user(&param, (void __user *) arg,
++			sizeof(param)))
++			return -EFAULT;
++
++		lock = genlock_attach_lock(handle, param.fd);
++		if (IS_ERR(lock))
++			return PTR_ERR(lock);
++
++		return 0;
++	}
++	case GENLOCK_IOC_LOCK: {
++		if (copy_from_user(&param, (void __user *) arg,
++		sizeof(param)))
++			return -EFAULT;
++
++		return genlock_lock(handle, param.op, param.flags,
++			param.timeout);
++	}
++	case GENLOCK_IOC_WAIT: {
++		if (copy_from_user(&param, (void __user *) arg,
++		sizeof(param)))
++			return -EFAULT;
++
++		return genlock_wait(handle, param.timeout);
++	}
++	case GENLOCK_IOC_RELEASE: {
++		genlock_release_lock(handle);
++		return 0;
++	}
++	default:
++		return -EINVAL;
++	}
++}
++
++static int genlock_dev_release(struct inode *inodep, struct file *file)
++{
++	struct genlock_handle *handle = file->private_data;
++
++	genlock_put_handle(handle);
++
++	return 0;
++}
++
++static int genlock_dev_open(struct inode *inodep, struct file *file)
++{
++	struct genlock_handle *handle = _genlock_get_handle();
++	if (IS_ERR(handle))
++		return PTR_ERR(handle);
++
++	handle->file = file;
++	file->private_data = handle;
++	return 0;
++}
++
++static const struct file_operations genlock_dev_fops = {
++	.open = genlock_dev_open,
++	.release = genlock_dev_release,
++	.unlocked_ioctl = genlock_dev_ioctl,
++};
++
++static struct miscdevice genlock_dev;
++
++static int genlock_dev_init(void)
++{
++	genlock_dev.minor = MISC_DYNAMIC_MINOR;
++	genlock_dev.name = "genlock";
++	genlock_dev.fops = &genlock_dev_fops;
++	genlock_dev.parent = NULL;
++
++	return misc_register(&genlock_dev);
++}
++
++static void genlock_dev_close(void)
++{
++	misc_deregister(&genlock_dev);
++}
++
++module_init(genlock_dev_init);
++module_exit(genlock_dev_close);
++
++#endif
+diff --git a/kernel/include/linux/genlock.h b/kernel/include/linux/genlock.h
+new file mode 100644
+index 0000000..2e9f9d6
+--- /dev/null
++++ b/kernel/include/linux/genlock.h
+@@ -0,0 +1,45 @@
++#ifndef _GENLOCK_H_
++#define _GENLOCK_H_
++
++#ifdef __KERNEL__
++
++struct genlock;
++struct genlock_handle;
++
++struct genlock_handle *genlock_get_handle(void);
++struct genlock_handle *genlock_get_handle_fd(int fd);
++void genlock_put_handle(struct genlock_handle *handle);
++struct genlock *genlock_create_lock(struct genlock_handle *);
++struct genlock *genlock_attach_lock(struct genlock_handle *, int fd);
++int genlock_wait(struct genlock_handle *handle, u32 timeout);
++void genlock_release_lock(struct genlock_handle *);
++int genlock_lock(struct genlock_handle *handle, int op, int flags,
++	u32 timeout);
++#endif
++
++#define GENLOCK_UNLOCK 0
++#define GENLOCK_WRLOCK 1
++#define GENLOCK_RDLOCK 2
++
++#define GENLOCK_NOBLOCK (1 << 0)
++
++struct genlock_lock {
++	int fd;
++	int op;
++	int flags;
++	int timeout;
++};
++
++#define GENLOCK_IOC_MAGIC     'G'
++
++#define GENLOCK_IOC_NEW _IO(GENLOCK_IOC_MAGIC, 0)
++#define GENLOCK_IOC_EXPORT _IOR(GENLOCK_IOC_MAGIC, 1, \
++	struct genlock_lock)
++#define GENLOCK_IOC_ATTACH _IOW(GENLOCK_IOC_MAGIC, 2, \
++	struct genlock_lock)
++#define GENLOCK_IOC_LOCK _IOW(GENLOCK_IOC_MAGIC, 3, \
++	struct genlock_lock)
++#define GENLOCK_IOC_RELEASE _IO(GENLOCK_IOC_MAGIC, 4)
++#define GENLOCK_IOC_WAIT _IOW(GENLOCK_IOC_MAGIC, 5, \
++	struct genlock_lock)
++#endif
+-- 
+1.7.10

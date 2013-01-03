@@ -1,0 +1,89 @@
+From a7a87c77f6d9898b9faaddf7581ec84bb530f38f Mon Sep 17 00:00:00 2001
+From: 2fast4u88 <bk95ta391@gmail.com>
+Date: Tue, 3 Jul 2012 16:45:04 -0400
+Subject: [PATCH] UPDATE: Ext4 performance patch & Headset/Handset level from
+ Express
+
+---
+ Makefile                                |    2 +-
+ arch/arm/mach-msm/board-kingdom-audio.c |   16 ++++++++--------
+ fs/ext4/inode.c                         |   14 ++++++++++----
+ 3 files changed, 19 insertions(+), 13 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index e3d244a..3274a95 100644
+--- a/Makefile
++++ b/Makefile
+@@ -333,7 +333,7 @@ CHECK		= sparse
+ 
+ CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
+ 		  -Wbitwise -Wno-return-void $(CF)
+-MODFLAGS	= -DMODULE 
++MODFLAGS	= -DMODULE
+ CFLAGS_MODULE   = $(MODFLAGS)
+ AFLAGS_MODULE   = $(MODFLAGS)
+ LDFLAGS_MODULE  = -T $(srctree)/scripts/module-common.lds
+diff --git a/arch/arm/mach-msm/board-kingdom-audio.c b/arch/arm/mach-msm/board-kingdom-audio.c
+index 1ea1a4c..3adc3b6 100644
+--- a/arch/arm/mach-msm/board-kingdom-audio.c
++++ b/arch/arm/mach-msm/board-kingdom-audio.c
+@@ -45,16 +45,16 @@
+ 
+ static struct q5v2_hw_info q5v2_audio_hw[Q5V2_HW_COUNT] = {
+ 	[Q5V2_HW_HANDSET] = {
+-		.max_gain[VOC_NB_INDEX] = 0,
+-		.min_gain[VOC_NB_INDEX] = 0,
+-		.max_gain[VOC_WB_INDEX] = 0,
+-		.min_gain[VOC_WB_INDEX] = 0,
++		.max_gain[VOC_NB_INDEX] = 400,
++		.min_gain[VOC_NB_INDEX] = -1600,
++		.max_gain[VOC_WB_INDEX] = 400,
++		.min_gain[VOC_WB_INDEX] = -1600,
+ 	},
+ 	[Q5V2_HW_HEADSET] = {
+-		.max_gain[VOC_NB_INDEX] = 0,
+-		.min_gain[VOC_NB_INDEX] = 0,
+-		.max_gain[VOC_WB_INDEX] = 0,
+-		.min_gain[VOC_WB_INDEX] = 0,
++		.max_gain[VOC_NB_INDEX] = 900,
++		.min_gain[VOC_NB_INDEX] = -1100,
++		.max_gain[VOC_WB_INDEX] = 900,
++		.min_gain[VOC_WB_INDEX] = -1100,
+ 	},
+ 	[Q5V2_HW_SPEAKER] = {
+ 		.max_gain[VOC_NB_INDEX] = 0,
+diff --git a/fs/ext4/inode.c b/fs/ext4/inode.c
+index 671edc8..36f5b1a 100644
+--- a/fs/ext4/inode.c
++++ b/fs/ext4/inode.c
+@@ -1192,8 +1192,10 @@ static pgoff_t ext4_num_dirty_pages(struct inode *inode, pgoff_t idx,
+ 				break;
+ 			idx++;
+ 			num++;
+-			if (num >= max_pages)
++			if (num >= max_pages) {
++                          done = 1;
+ 				break;
++                  } 
+ 		}
+ 		pagevec_release(&pvec);
+ 	}
+@@ -2976,9 +2978,13 @@ static int ext4_da_writepages(struct address_space *mapping,
+ 	 * sbi->max_writeback_mb_bump whichever is smaller.
+ 	 */
+ 	max_pages = sbi->s_max_writeback_mb_bump << (20 - PAGE_CACHE_SHIFT);
+-	if (!range_cyclic && range_whole)
+-		desired_nr_to_write = wbc->nr_to_write * 8;
+-	else
++	
++        if (!range_cyclic && range_whole) {
++ 		if (wbc->nr_to_write == LLONG_MAX)
++ 			desired_nr_to_write = wbc->nr_to_write;
++ 		else
++ 			desired_nr_to_write = wbc->nr_to_write * 8;
++ 	} else
+ 		desired_nr_to_write = ext4_num_dirty_pages(inode, index,
+ 							   max_pages);
+ 	if (desired_nr_to_write > max_pages)
+-- 
+1.7.10

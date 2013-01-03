@@ -1,0 +1,590 @@
+From 8f32797985bd5f84ada1bb410bde674cfb99b4ed Mon Sep 17 00:00:00 2001
+From: cattleprod <hot2009wheels@hotmail.com>
+Date: Wed, 24 Aug 2011 00:56:53 +0100
+Subject: [PATCH] Add cleancache
+
+---
+ fs/buffer.c                |    3 +
+ fs/mpage.c                 |    7 ++
+ fs/super.c                 |    3 +
+ include/linux/cleancache.h |  122 ++++++++++++++++++++++
+ include/linux/fs.h         |    2 +
+ mm/Kconfig                 |    4 +
+ mm/Makefile                |    1 +
+ mm/cleancache.c            |  244 ++++++++++++++++++++++++++++++++++++++++++++
+ mm/filemap.c               |    6 ++
+ mm/truncate.c              |    9 ++
+ 10 files changed, 401 insertions(+)
+ create mode 100644 include/linux/cleancache.h
+ create mode 100644 mm/cleancache.c
+
+diff --git a/fs/buffer.c b/fs/buffer.c
+index d54812b..2bbbde0 100644
+--- a/fs/buffer.c
++++ b/fs/buffer.c
+@@ -41,6 +41,7 @@
+ #include <linux/bitops.h>
+ #include <linux/mpage.h>
+ #include <linux/bit_spinlock.h>
++#include <linux/cleancache.h>
+ 
+ static int fsync_buffers_list(spinlock_t *lock, struct list_head *list);
+ 
+@@ -277,6 +278,8 @@ void invalidate_bdev(struct block_device *bdev)
+ 	invalidate_bh_lrus();
+ 	lru_add_drain_all();	/* make sure all lru add caches are flushed */
+ 	invalidate_mapping_pages(mapping, 0, -1);
++	
++	cleancache_flush_inode(mapping);
+ }
+ EXPORT_SYMBOL(invalidate_bdev);
+ 
+diff --git a/fs/mpage.c b/fs/mpage.c
+index fd56ca2..945c68e 100644
+--- a/fs/mpage.c
++++ b/fs/mpage.c
+@@ -27,6 +27,7 @@
+ #include <linux/writeback.h>
+ #include <linux/backing-dev.h>
+ #include <linux/pagevec.h>
++#include <linux/cleancache.h>
+ 
+ /*
+  * I/O completion handler for multipage BIOs.
+@@ -286,6 +287,12 @@ static struct bio *mpage_bio_submit(int rw, struct bio *bio)
+ 		SetPageMappedToDisk(page);
+ 	}
+ 
++	if (fully_mapped && blocks_per_page == 1 && !PageUptodate(page) &&
++    cleancache_get_page(page) == 0) {
++      SetPageUptodate(page);
++      goto confused;
++  }
++
+ 	/*
+ 	 * This page will go to BIO.  Do we need to send this BIO off first?
+ 	 */
+diff --git a/fs/super.c b/fs/super.c
+index c7765bd..56164b0 100644
+--- a/fs/super.c
++++ b/fs/super.c
+@@ -30,6 +30,7 @@
+ #include <linux/idr.h>
+ #include <linux/mutex.h>
+ #include <linux/backing-dev.h>
++#include <linux/cleancache.h>
+ #include "internal.h"
+ 
+ 
+@@ -95,6 +96,7 @@ static struct super_block *alloc_super(struct file_system_type *type)
+ 		s->s_maxbytes = MAX_NON_LFS;
+ 		s->s_op = &default_op;
+ 		s->s_time_gran = 1000000000;
++		s->cleancache_poolid = -1;
+ 	}
+ out:
+ 	return s;
+@@ -157,6 +159,7 @@ void deactivate_locked_super(struct super_block *s)
+ {
+ 	struct file_system_type *fs = s->s_type;
+ 	if (atomic_dec_and_test(&s->s_active)) {
++		cleancache_flush_fs(s);
+ 		fs->kill_sb(s);
+ 		put_filesystem(fs);
+ 		put_super(s);
+diff --git a/include/linux/cleancache.h b/include/linux/cleancache.h
+new file mode 100644
+index 0000000..04ffb2e
+--- /dev/null
++++ b/include/linux/cleancache.h
+@@ -0,0 +1,122 @@
++#ifndef _LINUX_CLEANCACHE_H
++#define _LINUX_CLEANCACHE_H
++
++#include <linux/fs.h>
++#include <linux/exportfs.h>
++#include <linux/mm.h>
++
++#define CLEANCACHE_KEY_MAX 6
++
++/*
++ * cleancache requires every file with a page in cleancache to have a
++ * unique key unless/until the file is removed/truncated.  For some
++ * filesystems, the inode number is unique, but for "modern" filesystems
++ * an exportable filehandle is required (see exportfs.h)
++ */
++struct cleancache_filekey {
++	union {
++		ino_t ino;
++		__u32 fh[CLEANCACHE_KEY_MAX];
++		u32 key[CLEANCACHE_KEY_MAX];
++	} u;
++};
++
++struct cleancache_ops {
++	int (*init_fs)(size_t);
++	int (*init_shared_fs)(char *uuid, size_t);
++	int (*get_page)(int, struct cleancache_filekey,
++			pgoff_t, struct page *);
++	void (*put_page)(int, struct cleancache_filekey,
++			pgoff_t, struct page *);
++	void (*flush_page)(int, struct cleancache_filekey, pgoff_t);
++	void (*flush_inode)(int, struct cleancache_filekey);
++	void (*flush_fs)(int);
++};
++
++extern struct cleancache_ops
++	cleancache_register_ops(struct cleancache_ops *ops);
++extern void __cleancache_init_fs(struct super_block *);
++extern void __cleancache_init_shared_fs(char *, struct super_block *);
++extern int  __cleancache_get_page(struct page *);
++extern void __cleancache_put_page(struct page *);
++extern void __cleancache_flush_page(struct address_space *, struct page *);
++extern void __cleancache_flush_inode(struct address_space *);
++extern void __cleancache_flush_fs(struct super_block *);
++extern int cleancache_enabled;
++
++#ifdef CONFIG_CLEANCACHE
++static inline bool cleancache_fs_enabled(struct page *page)
++{
++	return page->mapping->host->i_sb->cleancache_poolid >= 0;
++}
++static inline bool cleancache_fs_enabled_mapping(struct address_space *mapping)
++{
++	return mapping->host->i_sb->cleancache_poolid >= 0;
++}
++#else
++#define cleancache_enabled (0)
++#define cleancache_fs_enabled(_page) (0)
++#define cleancache_fs_enabled_mapping(_page) (0)
++#endif
++
++/*
++ * The shim layer provided by these inline functions allows the compiler
++ * to reduce all cleancache hooks to nothingness if CONFIG_CLEANCACHE
++ * is disabled, to a single global variable check if CONFIG_CLEANCACHE
++ * is enabled but no cleancache "backend" has dynamically enabled it,
++ * and, for the most frequent cleancache ops, to a single global variable
++ * check plus a superblock element comparison if CONFIG_CLEANCACHE is enabled
++ * and a cleancache backend has dynamically enabled cleancache, but the
++ * filesystem referenced by that cleancache op has not enabled cleancache.
++ * As a result, CONFIG_CLEANCACHE can be enabled by default with essentially
++ * no measurable performance impact.
++ */
++
++static inline void cleancache_init_fs(struct super_block *sb)
++{
++	if (cleancache_enabled)
++		__cleancache_init_fs(sb);
++}
++
++static inline void cleancache_init_shared_fs(char *uuid, struct super_block *sb)
++{
++	if (cleancache_enabled)
++		__cleancache_init_shared_fs(uuid, sb);
++}
++
++static inline int cleancache_get_page(struct page *page)
++{
++	int ret = -1;
++
++	if (cleancache_enabled && cleancache_fs_enabled(page))
++		ret = __cleancache_get_page(page);
++	return ret;
++}
++
++static inline void cleancache_put_page(struct page *page)
++{
++	if (cleancache_enabled && cleancache_fs_enabled(page))
++		__cleancache_put_page(page);
++}
++
++static inline void cleancache_flush_page(struct address_space *mapping,
++					struct page *page)
++{
++	/* careful... page->mapping is NULL sometimes when this is called */
++	if (cleancache_enabled && cleancache_fs_enabled_mapping(mapping))
++		__cleancache_flush_page(mapping, page);
++}
++
++static inline void cleancache_flush_inode(struct address_space *mapping)
++{
++	if (cleancache_enabled && cleancache_fs_enabled_mapping(mapping))
++		__cleancache_flush_inode(mapping);
++}
++
++static inline void cleancache_flush_fs(struct super_block *sb)
++{
++	if (cleancache_enabled)
++		__cleancache_flush_fs(sb);
++}
++
++#endif /* _LINUX_CLEANCACHE_H */
+diff --git a/include/linux/fs.h b/include/linux/fs.h
+index 509ca14..461947f 100644
+--- a/include/linux/fs.h
++++ b/include/linux/fs.h
+@@ -1384,6 +1384,8 @@ struct super_block {
+ 	 * generic_show_options()
+ 	 */
+ 	char *s_options;
++	
++	int cleancache_poolid;
+ };
+ 
+ extern struct timespec current_fs_time(struct super_block *sb);
+diff --git a/mm/Kconfig b/mm/Kconfig
+index 80288d9..a24dfc8 100644
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -183,6 +183,10 @@ config COMPACTION
+ 	help
+ 	  Allows the compaction of memory for the allocation of huge pages.
+ 
++config CLEANCACHE
++	bool "Enable cleancache driver to cache clean pages if tmem is present"
++	default y
++
+ #
+ # support for page migration
+ #
+diff --git a/mm/Makefile b/mm/Makefile
+index c2cdfe8..0db1ec4 100644
+--- a/mm/Makefile
++++ b/mm/Makefile
+@@ -51,3 +51,4 @@ obj-$(CONFIG_DEBUG_KMEMLEAK_TEST) += kmemleak-test.o
+ obj-$(CONFIG_CMA) += cma.o
+ obj-$(CONFIG_CMA_BEST_FIT) += cma-best-fit.o
+ obj-$(CONFIG_VCM) += vcm.o
++obj-$(CONFIG_CLEANCACHE) += cleancache.o
+diff --git a/mm/cleancache.c b/mm/cleancache.c
+new file mode 100644
+index 0000000..bcaae4c
+--- /dev/null
++++ b/mm/cleancache.c
+@@ -0,0 +1,244 @@
++/*
++ * Cleancache frontend
++ *
++ * This code provides the generic "frontend" layer to call a matching
++ * "backend" driver implementation of cleancache.  See
++ * Documentation/vm/cleancache.txt for more information.
++ *
++ * Copyright (C) 2009-2010 Oracle Corp. All rights reserved.
++ * Author: Dan Magenheimer
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2.
++ */
++
++#include <linux/module.h>
++#include <linux/fs.h>
++#include <linux/exportfs.h>
++#include <linux/mm.h>
++#include <linux/cleancache.h>
++
++/*
++ * This global enablement flag may be read thousands of times per second
++ * by cleancache_get/put/flush even on systems where cleancache_ops
++ * is not claimed (e.g. cleancache is config'ed on but remains
++ * disabled), so is preferred to the slower alternative: a function
++ * call that checks a non-global.
++ */
++int cleancache_enabled;
++EXPORT_SYMBOL(cleancache_enabled);
++
++/*
++ * cleancache_ops is set by cleancache_ops_register to contain the pointers
++ * to the cleancache "backend" implementation functions.
++ */
++static struct cleancache_ops cleancache_ops;
++
++/* useful stats available in /sys/kernel/mm/cleancache */
++static unsigned long cleancache_succ_gets;
++static unsigned long cleancache_failed_gets;
++static unsigned long cleancache_puts;
++static unsigned long cleancache_flushes;
++
++/*
++ * register operations for cleancache, returning previous thus allowing
++ * detection of multiple backends and possible nesting
++ */
++struct cleancache_ops cleancache_register_ops(struct cleancache_ops *ops)
++{
++	struct cleancache_ops old = cleancache_ops;
++
++	cleancache_ops = *ops;
++	cleancache_enabled = 1;
++	return old;
++}
++EXPORT_SYMBOL(cleancache_register_ops);
++
++/* Called by a cleancache-enabled filesystem at time of mount */
++void __cleancache_init_fs(struct super_block *sb)
++{
++	sb->cleancache_poolid = (*cleancache_ops.init_fs)(PAGE_SIZE);
++}
++EXPORT_SYMBOL(__cleancache_init_fs);
++
++/* Called by a cleancache-enabled clustered filesystem at time of mount */
++void __cleancache_init_shared_fs(char *uuid, struct super_block *sb)
++{
++	sb->cleancache_poolid =
++		(*cleancache_ops.init_shared_fs)(uuid, PAGE_SIZE);
++}
++EXPORT_SYMBOL(__cleancache_init_shared_fs);
++
++/*
++ * If the filesystem uses exportable filehandles, use the filehandle as
++ * the key, else use the inode number.
++ */
++static int cleancache_get_key(struct inode *inode,
++			      struct cleancache_filekey *key)
++{
++	int (*fhfn)(struct dentry *, __u32 *fh, int *, int);
++	int len = 0, maxlen = CLEANCACHE_KEY_MAX;
++	struct super_block *sb = inode->i_sb;
++
++	key->u.ino = inode->i_ino;
++	if (sb->s_export_op != NULL) {
++		fhfn = sb->s_export_op->encode_fh;
++		if  (fhfn) {
++			struct dentry d;
++			d.d_inode = inode;
++			len = (*fhfn)(&d, &key->u.fh[0], &maxlen, 0);
++			if (len <= 0 || len == 255)
++				return -1;
++			if (maxlen > CLEANCACHE_KEY_MAX)
++				return -1;
++		}
++	}
++	return 0;
++}
++
++/*
++ * "Get" data from cleancache associated with the poolid/inode/index
++ * that were specified when the data was put to cleanache and, if
++ * successful, use it to fill the specified page with data and return 0.
++ * The pageframe is unchanged and returns -1 if the get fails.
++ * Page must be locked by caller.
++ */
++int __cleancache_get_page(struct page *page)
++{
++	int ret = -1;
++	int pool_id;
++	struct cleancache_filekey key = { .u.key = { 0 } };
++
++	VM_BUG_ON(!PageLocked(page));
++	pool_id = page->mapping->host->i_sb->cleancache_poolid;
++	if (pool_id < 0)
++		goto out;
++
++	if (cleancache_get_key(page->mapping->host, &key) < 0)
++		goto out;
++
++	ret = (*cleancache_ops.get_page)(pool_id, key, page->index, page);
++	if (ret == 0)
++		cleancache_succ_gets++;
++	else
++		cleancache_failed_gets++;
++out:
++	return ret;
++}
++EXPORT_SYMBOL(__cleancache_get_page);
++
++/*
++ * "Put" data from a page to cleancache and associate it with the
++ * (previously-obtained per-filesystem) poolid and the page's,
++ * inode and page index.  Page must be locked.  Note that a put_page
++ * always "succeeds", though a subsequent get_page may succeed or fail.
++ */
++void __cleancache_put_page(struct page *page)
++{
++	int pool_id;
++	struct cleancache_filekey key = { .u.key = { 0 } };
++
++	VM_BUG_ON(!PageLocked(page));
++	pool_id = page->mapping->host->i_sb->cleancache_poolid;
++	if (pool_id >= 0 &&
++	      cleancache_get_key(page->mapping->host, &key) >= 0) {
++		(*cleancache_ops.put_page)(pool_id, key, page->index, page);
++		cleancache_puts++;
++	}
++}
++EXPORT_SYMBOL(__cleancache_put_page);
++
++/*
++ * Flush any data from cleancache associated with the poolid and the
++ * page's inode and page index so that a subsequent "get" will fail.
++ */
++void __cleancache_flush_page(struct address_space *mapping, struct page *page)
++{
++	/* careful... page->mapping is NULL sometimes when this is called */
++	int pool_id = mapping->host->i_sb->cleancache_poolid;
++	struct cleancache_filekey key = { .u.key = { 0 } };
++
++	if (pool_id >= 0) {
++		VM_BUG_ON(!PageLocked(page));
++		if (cleancache_get_key(mapping->host, &key) >= 0) {
++			(*cleancache_ops.flush_page)(pool_id, key, page->index);
++			cleancache_flushes++;
++		}
++	}
++}
++EXPORT_SYMBOL(__cleancache_flush_page);
++
++/*
++ * Flush all data from cleancache associated with the poolid and the
++ * mappings's inode so that all subsequent gets to this poolid/inode
++ * will fail.
++ */
++void __cleancache_flush_inode(struct address_space *mapping)
++{
++	int pool_id = mapping->host->i_sb->cleancache_poolid;
++	struct cleancache_filekey key = { .u.key = { 0 } };
++
++	if (pool_id >= 0 && cleancache_get_key(mapping->host, &key) >= 0)
++		(*cleancache_ops.flush_inode)(pool_id, key);
++}
++EXPORT_SYMBOL(__cleancache_flush_inode);
++
++/*
++ * Called by any cleancache-enabled filesystem at time of unmount;
++ * note that pool_id is surrendered and may be reutrned by a subsequent
++ * cleancache_init_fs or cleancache_init_shared_fs
++ */
++void __cleancache_flush_fs(struct super_block *sb)
++{
++	if (sb->cleancache_poolid >= 0) {
++		int old_poolid = sb->cleancache_poolid;
++		sb->cleancache_poolid = -1;
++		(*cleancache_ops.flush_fs)(old_poolid);
++	}
++}
++EXPORT_SYMBOL(__cleancache_flush_fs);
++
++#ifdef CONFIG_SYSFS
++
++/* see Documentation/ABI/xxx/sysfs-kernel-mm-cleancache */
++
++#define CLEANCACHE_SYSFS_RO(_name) \
++	static ssize_t cleancache_##_name##_show(struct kobject *kobj, \
++				struct kobj_attribute *attr, char *buf) \
++	{ \
++		return sprintf(buf, "%lu\n", cleancache_##_name); \
++	} \
++	static struct kobj_attribute cleancache_##_name##_attr = { \
++		.attr = { .name = __stringify(_name), .mode = 0444 }, \
++		.show = cleancache_##_name##_show, \
++	}
++
++CLEANCACHE_SYSFS_RO(succ_gets);
++CLEANCACHE_SYSFS_RO(failed_gets);
++CLEANCACHE_SYSFS_RO(puts);
++CLEANCACHE_SYSFS_RO(flushes);
++
++static struct attribute *cleancache_attrs[] = {
++	&cleancache_succ_gets_attr.attr,
++	&cleancache_failed_gets_attr.attr,
++	&cleancache_puts_attr.attr,
++	&cleancache_flushes_attr.attr,
++	NULL,
++};
++
++static struct attribute_group cleancache_attr_group = {
++	.attrs = cleancache_attrs,
++	.name = "cleancache",
++};
++
++#endif /* CONFIG_SYSFS */
++
++static int __init init_cleancache(void)
++{
++#ifdef CONFIG_SYSFS
++	int err;
++
++	err = sysfs_create_group(mm_kobj, &cleancache_attr_group);
++#endif /* CONFIG_SYSFS */
++	return 0;
++}
++module_init(init_cleancache)
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 183d2d4..a551c7d 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -34,6 +34,7 @@
+ #include <linux/hardirq.h> /* for BUG_ON(!in_atomic()) only */
+ #include <linux/memcontrol.h>
+ #include <linux/mm_inline.h> /* for page_is_file_cache() */
++#include <linux/cleancache.h>
+ #include "internal.h"
+ 
+ /*
+@@ -119,6 +120,11 @@ void __remove_from_page_cache(struct page *page)
+ {
+ 	struct address_space *mapping = page->mapping;
+ 
++	if (PageUptodate(page) && PageMappedToDisk(page))
++    	  cleancache_put_page(page);
++  	else
++    	  cleancache_flush_page(mapping, page);
++
+ 	radix_tree_delete(&mapping->page_tree, page->index);
+ 	page->mapping = NULL;
+ 	mapping->nrpages--;
+diff --git a/mm/truncate.c b/mm/truncate.c
+index 937571b..86e08c7 100644
+--- a/mm/truncate.c
++++ b/mm/truncate.c
+@@ -19,6 +19,7 @@
+ #include <linux/task_io_accounting_ops.h>
+ #include <linux/buffer_head.h>	/* grr. try_to_release_page,
+ 				   do_invalidatepage */
++#include <linux/cleancache.h>
+ #include "internal.h"
+ 
+ 
+@@ -51,6 +52,7 @@ void do_invalidatepage(struct page *page, unsigned long offset)
+ static inline void truncate_partial_page(struct page *page, unsigned partial)
+ {
+ 	zero_user_segment(page, partial, PAGE_CACHE_SIZE);
++	cleancache_flush_page(page->mapping, page);
+ 	if (page_has_private(page))
+ 		do_invalidatepage(page, partial);
+ }
+@@ -215,6 +217,8 @@ void truncate_inode_pages_range(struct address_space *mapping,
+ 	pgoff_t next;
+ 	int i;
+ 
++	cleancache_flush_inode(mapping);
++
+ 	if (mapping->nrpages == 0)
+ 		return;
+ 
+@@ -290,6 +294,7 @@ void truncate_inode_pages_range(struct address_space *mapping,
+ 		pagevec_release(&pvec);
+ 		mem_cgroup_uncharge_end();
+ 	}
++	cleancache_flush_inode(mapping);
+ }
+ EXPORT_SYMBOL(truncate_inode_pages_range);
+ 
+@@ -428,6 +433,8 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
+ 	int did_range_unmap = 0;
+ 	int wrapped = 0;
+ 
++	cleancache_flush_inode(mapping);
++
+ 	pagevec_init(&pvec, 0);
+ 	next = start;
+ 	while (next <= end && !wrapped &&
+@@ -486,6 +493,8 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
+ 		mem_cgroup_uncharge_end();
+ 		cond_resched();
+ 	}
++	
++	cleancache_flush_inode(mapping);
+ 	return ret;
+ }
+ EXPORT_SYMBOL_GPL(invalidate_inode_pages2_range);
+-- 
+1.7.10

@@ -1,0 +1,155 @@
+From 837126e8e4f04c6f7ae84ccdd7c6b49ae504643d Mon Sep 17 00:00:00 2001
+From: showp1984 <showp1984@gmail.com>
+Date: Thu, 3 Nov 2011 05:47:29 +0100
+Subject: [PATCH] -O3 compilation fixups
+
+Conflicts:
+
+	drivers/gpu/msm/adreno.c
+---
+ fs/jbd/journal.c   |    2 +-
+ fs/namei.c         |   16 ++++++++--------
+ fs/namespace.c     |    4 ++--
+ net/unix/af_unix.c |    8 ++++----
+ 4 files changed, 15 insertions(+), 15 deletions(-)
+
+diff --git a/fs/jbd/journal.c b/fs/jbd/journal.c
+index e2d4285..6634f68 100644
+--- a/fs/jbd/journal.c
++++ b/fs/jbd/journal.c
+@@ -820,7 +820,7 @@ journal_t * journal_init_inode (struct inode *inode)
+ 	journal_t *journal = journal_init_common();
+ 	int err;
+ 	int n;
+-	unsigned int blocknr;
++	unsigned int blocknr = 0;
+ 
+ 	if (!journal)
+ 		return NULL;
+diff --git a/fs/namei.c b/fs/namei.c
+index b456c7a..6f5ce98 100644
+--- a/fs/namei.c
++++ b/fs/namei.c
+@@ -2429,7 +2429,7 @@ static int may_mknod(mode_t mode)
+ 		unsigned, dev)
+ {
+ 	int error;
+-	char *tmp;
++	char *tmp = 0;
+ 	struct dentry *dentry;
+ 	struct nameidata nd;
+ 
+@@ -2509,7 +2509,7 @@ int vfs_mkdir(struct inode *dir, struct dentry *dentry, int mode)
+ SYSCALL_DEFINE3(mkdirat, int, dfd, const char __user *, pathname, int, mode)
+ {
+ 	int error = 0;
+-	char * tmp;
++	char * tmp = 0;
+ 	struct dentry *dentry;
+ 	struct nameidata nd;
+ 
+@@ -2612,7 +2612,7 @@ int vfs_rmdir(struct inode *dir, struct dentry *dentry)
+ static long do_rmdir(int dfd, const char __user *pathname)
+ {
+ 	int error = 0;
+-	char * name;
++	char * name = 0;
+ 	struct dentry *dentry;
+ 	struct nameidata nd;
+ 
+@@ -2708,7 +2708,7 @@ int vfs_unlink(struct inode *dir, struct dentry *dentry)
+ static long do_unlinkat(int dfd, const char __user *pathname)
+ {
+ 	int error;
+-	char *name;
++	char *name = 0;
+ 	struct dentry *dentry;
+ 	struct nameidata nd;
+ 	struct inode *inode = NULL;
+@@ -2801,7 +2801,7 @@ int vfs_symlink(struct inode *dir, struct dentry *dentry, const char *oldname)
+ {
+ 	int error;
+ 	char *from;
+-	char *to;
++	char *to = 0;
+ 	struct dentry *dentry;
+ 	struct nameidata nd;
+ 
+@@ -2901,7 +2901,7 @@ int vfs_link(struct dentry *old_dentry, struct inode *dir, struct dentry *new_de
+ 	struct path old_path;
+ 	int how = 0;
+ 	int error;
+-	char *to;
++	char *to = 0;
+ 
+ 	if ((flags & ~(AT_SYMLINK_FOLLOW | AT_EMPTY_PATH)) != 0)
+ 		return -EINVAL;
+@@ -3113,8 +3113,8 @@ int vfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+ 	struct dentry *old_dentry, *new_dentry;
+ 	struct dentry *trap;
+ 	struct nameidata oldnd, newnd;
+-	char *from;
+-	char *to;
++	char *from = 0;
++	char *to = 0;
+ 	int error;
+ 
+ 	error = user_path_parent(olddfd, oldname, &oldnd, &from);
+diff --git a/fs/namespace.c b/fs/namespace.c
+index 7b4fa8f..50353c2 100644
+--- a/fs/namespace.c
++++ b/fs/namespace.c
+@@ -2491,9 +2491,9 @@ struct mnt_namespace *create_mnt_ns(struct vfsmount *mnt)
+ 		char __user *, type, unsigned long, flags, void __user *, data)
+ {
+ 	int ret;
+-	char *kernel_type;
++	char *kernel_type = 0;
+ 	char *kernel_dir;
+-	char *kernel_dev;
++	char *kernel_dev = 0;
+ 	unsigned long data_page;
+ 
+ 	ret = copy_mount_string(type, &kernel_type);
+diff --git a/net/unix/af_unix.c b/net/unix/af_unix.c
+index 0722a25..b8c02fa 100644
+--- a/net/unix/af_unix.c
++++ b/net/unix/af_unix.c
+@@ -811,7 +811,7 @@ static int unix_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
+ 	struct dentry *dentry = NULL;
+ 	struct nameidata nd;
+ 	int err;
+-	unsigned hash;
++	unsigned hash = 0;
+ 	struct unix_address *addr;
+ 	struct hlist_head *list;
+ 
+@@ -957,7 +957,7 @@ static int unix_dgram_connect(struct socket *sock, struct sockaddr *addr,
+ 	struct net *net = sock_net(sk);
+ 	struct sockaddr_un *sunaddr = (struct sockaddr_un *)addr;
+ 	struct sock *other;
+-	unsigned hash;
++	unsigned hash = 0;
+ 	int err;
+ 
+ 	if (addr->sa_family != AF_UNSPEC) {
+@@ -1055,7 +1055,7 @@ static int unix_stream_connect(struct socket *sock, struct sockaddr *uaddr,
+ 	struct sock *newsk = NULL;
+ 	struct sock *other = NULL;
+ 	struct sk_buff *skb = NULL;
+-	unsigned hash;
++	unsigned hash = 0;
+ 	int st;
+ 	int err;
+ 	long timeo;
+@@ -1410,7 +1410,7 @@ static int unix_dgram_sendmsg(struct kiocb *kiocb, struct socket *sock,
+ 	struct sock *other = NULL;
+ 	int namelen = 0; /* fake GCC */
+ 	int err;
+-	unsigned hash;
++	unsigned hash = 0;
+ 	struct sk_buff *skb;
+ 	long timeo;
+ 	struct scm_cookie tmp_scm;
+-- 
+1.7.10

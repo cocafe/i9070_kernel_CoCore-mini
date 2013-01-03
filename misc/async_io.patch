@@ -1,0 +1,40 @@
+From f04a4d21402f73cd57fb34a14c179c8af08b4a4f Mon Sep 17 00:00:00 2001
+From: aatjitra <aatjitra@gmail.com>
+Date: Sun, 16 Dec 2012 21:47:46 +0800
+Subject: [PATCH] asynchronous io
+
+---
+ fs/aio.c |    4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/fs/aio.c b/fs/aio.c
+index b4a88cc..1348542 100755
+--- a/fs/aio.c
++++ b/fs/aio.c
+@@ -1620,7 +1620,6 @@ long do_io_submit(aio_context_t ctx_id, long nr,
+ 	struct kioctx *ctx;
+ 	long ret = 0;
+ 	int i;
+-	struct blk_plug plug;
+ 
+ 	if (unlikely(nr < 0))
+ 		return -EINVAL;
+@@ -1637,8 +1636,6 @@ long do_io_submit(aio_context_t ctx_id, long nr,
+ 		return -EINVAL;
+ 	}
+ 
+-	blk_start_plug(&plug);
+-
+ 	/*
+ 	 * AKPM: should this return a partial result if some of the IOs were
+ 	 * successfully submitted?
+@@ -1661,7 +1658,6 @@ long do_io_submit(aio_context_t ctx_id, long nr,
+ 		if (ret)
+ 			break;
+ 	}
+-	blk_finish_plug(&plug);
+ 
+ 	put_ioctx(ctx);
+ 	return i ? i : ret;
+-- 
+1.7.10

@@ -1,0 +1,41 @@
+From 9e960b864d7dd047d89f1879c9c961c18a09e069 Mon Sep 17 00:00:00 2001
+From: faux123 <reioux@gmail.com>
+Date: Sat, 12 Nov 2011 23:36:46 -0800
+Subject: [PATCH] kernel:sched: LOAD_FREQ (4*HZ+61) avoids loadavg Moire
+
+LOAD_FREQ is (5*HZ+1) to avoid high load average when idle:
+http://kerneltrap.org/mailarchive/linux-kernel/2007/10/3/328568
+
+I suggest (4*HZ+61) for a better distribution.
+
+With some seconds based load (like SSL heartbeats)
+and LOAD_FREQ at (5*HZ+1) I see Moire patterns like inverse sawtooth,
+since 2 or 3 probes hit the jobs (load increases quickly),
+followed by several probes missing it.
+
+A 4.61 sec interval gives optimal distribution over when within a
+second a probe is taken, as .61 is close to golden ratio phi 1.618...
+(test in http://ripke.com/goldenratio.c).
+
+12*4.61 = 55.32 secs is still close to a minute,
+and 13*4.61=59.93 is even closer than the current 12*5.01=60.12
+(with exponents EXP_x adjusted to a ratio of 13 instead of 12).
+---
+ include/linux/sched.h |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 3f585a4..9ccd4c1 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -122,7 +122,7 @@ struct sched_param {
+ 
+ #define FSHIFT		11		/* nr of bits of precision */
+ #define FIXED_1		(1<<FSHIFT)	/* 1.0 as fixed-point */
+-#define LOAD_FREQ	(5*HZ+1)	/* 5 sec intervals */
++#define LOAD_FREQ	(4*HZ+61)	/* 4.61 sec intervals */
+ #define EXP_1		1884		/* 1/exp(5sec/1min) as fixed-point */
+ #define EXP_5		2014		/* 1/exp(5sec/5min) */
+ #define EXP_15		2037		/* 1/exp(5sec/15min) */
+-- 
+1.7.10

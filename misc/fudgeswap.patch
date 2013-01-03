@@ -1,0 +1,70 @@
+From c71a9ea0da6d461f7ab660f08d2b48a9f3f1bb9d Mon Sep 17 00:00:00 2001
+From: DooMLoRD <metoo.mememe@gmail.com>
+Date: Mon, 9 Apr 2012 02:22:59 +0530
+Subject: [PATCH] staging:lowmemkiller add Fugeswap (from
+ https://github.com/LeeDroid-/Shooter-2.6.35-MR/commit/cf6769d710f753900f3fb6c2b8f8633442639231)
+
+---
+ kernel/drivers/staging/android/lowmemorykiller.c |   26 ++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/kernel/drivers/staging/android/lowmemorykiller.c b/kernel/drivers/staging/android/lowmemorykiller.c
+index 63d52a4..fa59389 100644
+--- a/kernel/drivers/staging/android/lowmemorykiller.c
++++ b/kernel/drivers/staging/android/lowmemorykiller.c
+@@ -36,6 +36,11 @@
+ #include <linux/sched.h>
+ #include <linux/notifier.h>
+ 
++#ifdef CONFIG_SWAP
++#include <linux/fs.h>
++#include <linux/swap.h>
++#endif
++
+ static uint32_t lowmem_debug_level = 2;
+ static int lowmem_adj[6] = {
+ 	0,
+@@ -54,6 +59,9 @@
+ 
+ static struct task_struct *lowmem_deathpending;
+ static unsigned long lowmem_deathpending_timeout;
++#ifdef CONFIG_SWAP
++static int fudgeswap = 512;
++#endif
+ 
+ #define lowmem_print(level, x...)			\
+ 	do {						\
+@@ -105,6 +113,20 @@ static int lowmem_shrink(int nr_to_scan, gfp_t gfp_mask)
+ 	    time_before_eq(jiffies, lowmem_deathpending_timeout))
+ 		return 0;
+ 
++#ifdef CONFIG_SWAP
++	if(fudgeswap != 0){
++		struct sysinfo si;
++		si_swapinfo(&si);
++
++		if(si.freeswap > 0){
++			if(fudgeswap > si.freeswap)
++				other_file += si.freeswap;
++			else
++				other_file += fudgeswap;
++		}
++	}
++#endif
++
+ 	if (lowmem_adj_size < array_size)
+ 		array_size = lowmem_adj_size;
+ 	if (lowmem_minfree_size < array_size)
+@@ -205,6 +227,10 @@ static void __exit lowmem_exit(void)
+ 			 S_IRUGO | S_IWUSR);
+ module_param_named(debug_level, lowmem_debug_level, uint, S_IRUGO | S_IWUSR);
+ 
++#ifdef CONFIG_SWAP
++module_param_named(fudgeswap, fudgeswap, int, S_IRUGO | S_IWUSR);
++#endif
++
+ module_init(lowmem_init);
+ module_exit(lowmem_exit);
+ 
+-- 
+1.7.10

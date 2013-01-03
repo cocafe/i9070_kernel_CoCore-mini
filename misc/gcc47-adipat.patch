@@ -1,0 +1,225 @@
+From 768d6866ed1c3c88fe3791c551bce7f982da593d Mon Sep 17 00:00:00 2001
+From: AdiPat <adithemagnificent@gmail.com>
+Date: Mon, 5 Nov 2012 21:25:34 +0530
+Subject: [PATCH] Fix compilation on GCC 4.7.2
+
+Signed-off-by: AdiPat <adithemagnificent@gmail.com>
+---
+ arch/arm/boot/compressed/Makefile |   81 +++++++++++++++++++++++--------------
+ arch/arm/configs/debug_defconfig  |    2 +-
+ arch/arm/kernel/head.S            |    2 +-
+ security/smc/Makefile             |    6 +++
+ 4 files changed, 59 insertions(+), 32 deletions(-)
+
+diff --git a/arch/arm/boot/compressed/Makefile b/arch/arm/boot/compressed/Makefile
+index 0ea2e26..978eb8c 100644
+--- a/arch/arm/boot/compressed/Makefile
++++ b/arch/arm/boot/compressed/Makefile
+@@ -4,8 +4,28 @@
+ # create a compressed vmlinuz image from the original vmlinux
+ #
+ 
+-HEAD	= head.o
+-OBJS	= misc.o decompress.o
++OBJS		=
++plus_sec := $(call as-instr,.arch_extension sec,+sec)
++
++# Ensure that mmcif loader code appears early in the image
++# to minimise that number of bocks that have to be read in
++# order to load it.
++ifeq ($(CONFIG_ZBOOT_ROM_MMCIF),y)
++ifeq ($(CONFIG_ARCH_SH7372),y)
++OBJS		+= mmcif-sh7372.o
++endif
++endif
++
++AFLAGS_head.o := -DTEXT_OFFSET=$(TEXT_OFFSET)
++AFLAGS_head.o += -Wa,-march=armv7-a$(plus_sec)
++HEAD = head.o
++
++AFLAGS_misc.o +=-Wa,-march=armv7-a$(plus_sec)
++MISC = misc.o
++
++AFLAGS_decompress.o += -Wa,-march=armv7-a$(plus_sec)
++DECOMPRESS = decompress.o
++
+ FONTC	= $(srctree)/drivers/video/console/font_acorn_8x8.c
+ 
+ #
+@@ -19,10 +39,6 @@ ifeq ($(CONFIG_ARCH_SHARK),y)
+ OBJS		+= head-shark.o ofw-shark.o
+ endif
+ 
+-ifeq ($(CONFIG_ARCH_L7200),y)
+-OBJS		+= head-l7200.o
+-endif
+-
+ ifeq ($(CONFIG_ARCH_P720T),y)
+ # Borrow this code from SA1100
+ OBJS		+= head-sa1100.o
+@@ -32,11 +48,15 @@ ifeq ($(CONFIG_ARCH_SA1100),y)
+ OBJS		+= head-sa1100.o
+ endif
+ 
++ifeq ($(CONFIG_ARCH_VT8500),y)
++OBJS		+= head-vt8500.o
++endif
++
+ ifeq ($(CONFIG_CPU_XSCALE),y)
+ OBJS		+= head-xscale.o
+ endif
+ 
+-ifeq ($(CONFIG_PXA_SHARPSL),y)
++ifeq ($(CONFIG_PXA_SHARPSL_DETECT_MACH_ID),y)
+ OBJS		+= head-sharpsl.o
+ endif
+ 
+@@ -48,6 +68,10 @@ else
+ endif
+ endif
+ 
++ifeq ($(CONFIG_ARCH_SHMOBILE),y)
++OBJS		+= head-shmobile.o
++endif
++
+ #
+ # We now have a PIC decompressor implementation.  Decompressors running
+ # from RAM should not define ZTEXTADDR.  Decompressors running directly
+@@ -58,19 +82,19 @@ ZTEXTADDR	:= $(CONFIG_ZBOOT_ROM_TEXT)
+ ZBSSADDR	:= $(CONFIG_ZBOOT_ROM_BSS)
+ else
+ ZTEXTADDR	:= 0
+-ZBSSADDR	:= ALIGN(4)
++ZBSSADDR	:= ALIGN(8)
+ endif
+ 
+ SEDFLAGS	= s/TEXT_START/$(ZTEXTADDR)/;s/BSS_START/$(ZBSSADDR)/
+ 
+-suffix_$(CONFIG_KERNEL_GZIP) = gzip
+-suffix_$(CONFIG_KERNEL_LZO)  = lzo
+-suffix_$(CONFIG_KERNEL_LZMA) = lzma
+-suffix_$(CONFIG_KERNEL_XZ) = xzkern
++suffix_$(CONFIG_KERNEL_GZIP) := gzip
++suffix_$(CONFIG_KERNEL_LZO)  := lzo
++suffix_$(CONFIG_KERNEL_LZMA) := lzma
++suffix_$(CONFIG_KERNEL_XZ)   := xzkern
+ 
+-targets       := vmlinux vmlinux.lds \
++targets := vmlinux vmlinux.lds \
+ 		 piggy.$(suffix_y) piggy.$(suffix_y).o \
+-		 font.o font.c head.o misc.o $(OBJS)
++		 font.o font.c head.o misc.o decompress.o $(OBJS)
+ 
+ # Make sure files are removed during clean
+ extra-y       += piggy.gzip piggy.lzo piggy.lzma piggy.xzkern lib1funcs.S ashldi3.S
+@@ -80,22 +104,16 @@ ORIG_CFLAGS := $(KBUILD_CFLAGS)
+ KBUILD_CFLAGS = $(subst -pg, , $(ORIG_CFLAGS))
+ endif
+ 
+-EXTRA_CFLAGS  := -fpic -fno-builtin
+-EXTRA_AFLAGS  := -Wa,-march=all
++ccflags-y := -fpic -fno-builtin
++asflags-y := -Wa,-march=all
+ 
+-# Supply ZRELADDR, INITRD_PHYS and PARAMS_PHYS to the decompressor via
+-# linker symbols.  We only define initrd_phys and params_phys if the
+-# machine class defined the corresponding makefile variable.
+-LDFLAGS_vmlinux := --defsym zreladdr=$(ZRELADDR)
++# Supply ZRELADDR to the decompressor via a linker symbol.
++ifneq ($(CONFIG_AUTO_ZRELADDR),y)
++LDFLAGS_vmlinux += --defsym zreladdr=$(ZRELADDR)
++endif
+ ifeq ($(CONFIG_CPU_ENDIAN_BE8),y)
+ LDFLAGS_vmlinux += --be8
+ endif
+-ifneq ($(INITRD_PHYS),)
+-LDFLAGS_vmlinux += --defsym initrd_phys=$(INITRD_PHYS)
+-endif
+-ifneq ($(PARAMS_PHYS),)
+-LDFLAGS_vmlinux += --defsym params_phys=$(PARAMS_PHYS)
+-endif
+ # ?
+ LDFLAGS_vmlinux += -p
+ # Report unresolved symbol references
+@@ -106,25 +124,28 @@ LDFLAGS_vmlinux += -X
+ LDFLAGS_vmlinux += -T
+ 
+ # For __aeabi_uidivmod
++AFLAGS_lib1funcs.o +=-Wa,-march=armv7-a$(plus_sec)
+ lib1funcs = $(obj)/lib1funcs.o
+ 
+ $(obj)/lib1funcs.S: $(srctree)/arch/$(SRCARCH)/lib/lib1funcs.S FORCE
+ 	$(call cmd,shipped)
+ 
+ # For __aeabi_llsl
++AFLAGS_ashldi3.o +=-Wa,-march=armv7-a$(plus_sec)
+ ashldi3 = $(obj)/ashldi3.o
+ 
+ $(obj)/ashldi3.S: $(srctree)/arch/$(SRCARCH)/lib/ashldi3.S FORCE
+ 	$(call cmd,shipped)
+ 
+-$(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/$(HEAD) $(obj)/piggy.$(suffix_y).o \
+-	 	$(addprefix $(obj)/, $(OBJS)) $(lib1funcs) $(ashldi3) FORCE
++$(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/$(HEAD) $(obj)/$(MISC) $(obj)/$(DECOMPRESS) $(obj)/piggy.$(suffix_y).o \
++    $(addprefix $(obj)/, $(OBJS)) $(lib1funcs) $(ashldi3) FORCE
+ 	$(call if_changed,ld)
+-	@:
++	@$(check_for_bad_syms)
+ 
+ $(obj)/piggy.$(suffix_y): $(obj)/../Image FORCE
+ 	$(call if_changed,$(suffix_y))
+ 
++AFLAGS_piggy.$(suffix_y).o += -Wa,-march=armv7-a$(plus_sec)
+ $(obj)/piggy.$(suffix_y).o:  $(obj)/piggy.$(suffix_y) FORCE
+ 
+ CFLAGS_font.o := -Dstatic=
+@@ -132,5 +153,5 @@ CFLAGS_font.o := -Dstatic=
+ $(obj)/font.c: $(FONTC)
+ 	$(call cmd,shipped)
+ 
+-$(obj)/vmlinux.lds: $(obj)/vmlinux.lds.in arch/arm/boot/Makefile .config
++$(obj)/vmlinux.lds: $(obj)/vmlinux.lds.in arch/arm/boot/Makefile $(KCONFIG_CONFIG)
+ 	@sed "$(SEDFLAGS)" < $< > $@
+diff --git a/arch/arm/configs/debug_defconfig b/arch/arm/configs/debug_defconfig
+index 9ad3415..5952a88 100755
+--- a/arch/arm/configs/debug_defconfig
++++ b/arch/arm/configs/debug_defconfig
+@@ -346,7 +346,7 @@ CONFIG_SAMSUNG_USE_SEC_LOG_BUF=y
+ # CONFIG_OMAP3_EMU is not set
+ # CONFIG_OMAP3_SDRC_AC_TIMING is not set
+ CONFIG_USE_GPIO_I2C=y
+-CONFIG_DEBUG_SECTION_MISMATCH=y
++# CONFIG_DEBUG_SECTION_MISMATCH is not set
+ 
+ #
+ # Processor Type
+diff --git a/arch/arm/kernel/head.S b/arch/arm/kernel/head.S
+index eb62bf9..f391553 100644
+--- a/arch/arm/kernel/head.S
++++ b/arch/arm/kernel/head.S
+@@ -158,7 +158,7 @@ __secondary_data:
+  * registers.
+  */
+ __enable_mmu:
+-#ifdef CONFIG_ALIGNMENT_TRAP
++#if defined(CONFIG_ALIGNMENT_TRAP) && __LINUX_ARM_ARCH__ < 6
+ 	orr	r0, r0, #CR_A
+ #else
+ 	bic	r0, r0, #CR_A
+diff --git a/security/smc/Makefile b/security/smc/Makefile
+index 4b21a30..a8825e3 100644
+--- a/security/smc/Makefile
++++ b/security/smc/Makefile
+@@ -1,4 +1,10 @@
++plus_sec := $(call as-instr,.arch_extension sec,+sec)
++
++AFLAGS_bridge_pub2sec.o +=-Wa,-march=armv7-a$(plus_sec)
++
+ ifeq ($(CONFIG_SECURITY_MIDDLEWARE_COMPONENT),y)
+ obj-$(CONFIG_ARCH_OMAP3)	+= omap3/
+ obj-$(CONFIG_ARCH_OMAP4)	+= omap4/
+ endif
++
++
+-- 
+1.7.10

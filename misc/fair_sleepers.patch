@@ -1,0 +1,52 @@
+From 29ad1078af771b5f3738867edee6a1d30095be14 Mon Sep 17 00:00:00 2001
+From: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Date: Wed, 7 Sep 2011 22:05:37 +0900
+Subject: [PATCH] sched: FAIR_SLEEPERS feature
+
+Add the fair sleeper feature which disables sleeper extra vruntime boost on
+wakeup. This is makes the DYN_MIN_VRUNTIME feature behave better by keeping the
+min_vruntime value somewhere between MIN_vruntime and max_vruntime (see
+/proc/sched_debug output with CONFIG_SCHED_DEBUG=y).
+
+Turning on this knob is typically bad for interactivity. This is why a later
+patch introduces the "FAIR_SLEEPERS_INTERACTIVE" feature, which provides this
+combination of features:
+
+NO_FAIR_SLEEPERS
+FAIR_SLEEPERS_INTERACTIVE
+
+So that fair sleeper fairness is only given to interactive wakeup chains.
+
+Signed-off-by: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+---
+ kernel/sched_fair.c     |    2 +-
+ kernel/sched_features.h |    1 +
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/sched_fair.c b/kernel/sched_fair.c
+index 0bdb4b7..8a72c05 100644
+--- a/kernel/sched_fair.c
++++ b/kernel/sched_fair.c
+@@ -738,7 +738,7 @@ static void check_spread(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 		vruntime += sched_vslice(cfs_rq, se);
+ 
+ 	/* sleeps up to a single latency don't count. */
+-	if (!initial) {
++	if (sched_feat(FAIR_SLEEPERS) && !initial) {
+ 		unsigned long thresh = sysctl_sched_latency;
+ 
+ 		/*
+diff --git a/kernel/sched_features.h b/kernel/sched_features.h
+index 83c66e8..587b81f 100644
+--- a/kernel/sched_features.h
++++ b/kernel/sched_features.h
+@@ -3,6 +3,7 @@
+  * them to run sooner, but does not allow tons of sleepers to
+  * rip the spread apart.
+  */
++SCHED_FEAT(FAIR_SLEEPERS, 1)
+ SCHED_FEAT(GENTLE_FAIR_SLEEPERS, 1)
+ 
+ /*
+-- 
+1.7.10

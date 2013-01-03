@@ -1,0 +1,71 @@
+From 50c5fe6db93cc6458903896c19cd5cb9e9011953 Mon Sep 17 00:00:00 2001
+From: Daniel Walker <dwalker@fifo99.com>
+Date: Fri, 17 Sep 2010 16:42:10 +0100
+Subject: [PATCH] ARM: 6398/1: add proc info for ARM11MPCore/Cortex-A9 from
+ ARM
+
+Setting of these bits can cause issues on other SMP SoC's not produced
+by ARM.
+
+Change-Id: Idd662aabefcff1cc1875ec54b323928142f3033f
+Acked-by: Catalin Marinas <catalin.marinas@arm.com>
+Signed-off-by: Daniel Walker <dwalker@codeaurora.org>
+Signed-off-by: Russell King <rmk+kernel@arm.linux.org.uk>
+[lbassel@codeaurora.org: resolved merge conflict]
+Signed-off-by: Larry Bassel <lbassel@codeaurora.org>
+---
+ arch/arm/mm/proc-v7.S |   26 +++++++++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/mm/proc-v7.S b/arch/arm/mm/proc-v7.S
+index 1dccad4..9ac0561 100644
+--- a/arch/arm/mm/proc-v7.S
++++ b/arch/arm/mm/proc-v7.S
+@@ -199,13 +199,14 @@ cpu_v7_name:
+  *	It is assumed that:
+  *	- cache type register is implemented
+  */
+-__v7_setup:
++__v7_ca9mp_setup:
+ #if defined(CONFIG_SMP) && !defined(CONFIG_ARCH_MSM_SCORPIONMP)
+ 	mrc	p15, 0, r0, c1, c0, 1
+ 	tst	r0, #(1 << 6)			@ SMP/nAMP mode enabled?
+ 	orreq	r0, r0, #(1 << 6) | (1 << 0)	@ Enable SMP/nAMP mode and
+ 	mcreq	p15, 0, r0, c1, c0, 1		@ TLB ops broadcasting
+ #endif
++__v7_setup:
+ 	adr	r12, __v7_setup_stack		@ the local stack
+ 	stmia	r12, {r0-r5, r7, r9, r11, lr}
+ 	bl	v7_flush_dcache_all
+@@ -365,6 +366,29 @@ cpu_elf_name:
+ 
+ 	.section ".proc.info.init", #alloc, #execinstr
+ 
++	.type   __v7_ca9mp_proc_info, #object
++__v7_ca9mp_proc_info:
++	.long	0x410fc090		@ Required ID value
++	.long	0xff0ffff0		@ Mask for ID
++	.long   PMD_TYPE_SECT | \
++		PMD_SECT_AP_WRITE | \
++		PMD_SECT_AP_READ | \
++		PMD_FLAGS
++	.long   PMD_TYPE_SECT | \
++		PMD_SECT_XN | \
++		PMD_SECT_AP_WRITE | \
++		PMD_SECT_AP_READ
++	b	__v7_ca9mp_setup
++	.long	cpu_arch_name
++	.long	cpu_elf_name
++	.long	HWCAP_SWP|HWCAP_HALF|HWCAP_THUMB|HWCAP_FAST_MULT|HWCAP_EDSP
++	.long	cpu_v7_name
++	.long	v7_processor_functions
++	.long	v7wbi_tlb_fns
++	.long	v6_user_fns
++	.long	v7_cache_fns
++	.size	__v7_ca9mp_proc_info, . - __v7_ca9mp_proc_info
++
+ 	/*
+ 	 * Match any ARMv7 processor core.
+ 	 */
+-- 
+1.7.10

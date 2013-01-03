@@ -1,0 +1,103 @@
+diff -Naur kernel-bfs/kernel/sched_bfs.c kernel-bfs1/kernel/sched_bfs.c
+--- kernel-bfs/kernel/sched_bfs.c	2012-11-25 13:33:37.974432487 +0800
++++ kernel-bfs1/kernel/sched_bfs.c	2012-11-25 13:32:59.000000000 +0800
+@@ -2591,6 +2591,31 @@
+ 	grq_unlock();
+ }
+ 
++/* Temporary workaround */
++#ifdef CONFIG_NO_HZ
++/*
++ * In the semi idle case, use the nearest busy cpu for migrating timers
++ * from an idle cpu.  This is good for power-savings.
++ *
++ * We don't do similar optimization for completely idle system, as
++ * selecting an idle cpu will add more delays to the timers than intended
++ * (as that cpu's timer base may not be uptodate wrt jiffies etc).
++ */
++int get_nohz_timer_target(void)
++{
++	int cpu = smp_processor_id();
++	int i;
++	struct sched_domain *sd;
++
++	for_each_domain(cpu, sd) {
++		for_each_cpu(i, sched_domain_span(sd))
++			if (!idle_cpu(i))
++				return i;
++	}
++	return cpu;
++}
++#endif
++
+ void wake_up_idle_cpu(int cpu);
+ 
+ /*
+@@ -2888,6 +2913,41 @@
+ 	rq->rq_prio = p->prio;
+ }
+ 
++#ifdef CONFIG_SAMSUNG_KERNEL_DEBUG
++#ifdef CONFIG_SAMSUNG_LOG_BUF
++#include <mach/board-sec-u8500.h>
++#define SCHED_LOG_MAX 1000
++
++typedef struct {
++	unsigned long long time;
++	int cpu;
++	int pid;
++	char task[TASK_COMM_LEN];
++} sched_log_t;
++
++static sched_log_t * a_log_sched;
++
++void * log_buf_sched;
++EXPORT_SYMBOL(log_buf_sched);
++const int log_buf_sched_entry_size = sizeof(sched_log_t);
++EXPORT_SYMBOL(log_buf_sched_entry_size);
++const int log_buf_sched_entry_count = SCHED_LOG_MAX;
++EXPORT_SYMBOL(log_buf_sched_entry_count);
++
++static int log_active = 1;
++static int log_idx = -1;
++
++#endif /* CONFIG_SAMSUNG_LOG_BUF */
++#endif /* CONFIG_SAMSUNG_KERNEL_DEBUG */
++
++void sched_log_stop(void)
++{
++#ifdef CONFIG_SAMSUNG_LOG_BUF
++	log_active = 0;
++#endif
++}
++EXPORT_SYMBOL(sched_log_stop);
++
+ /*
+  * schedule() is the main scheduler function.
+  */
+@@ -2981,6 +3041,25 @@
+ 		 * Don't stick tasks when a real time task is going to run as
+ 		 * they may literally get stuck.
+ 		 */
++
++		/* Temporary workaround */
++		/* Samsung LOG BUFFER */
++#ifdef CONFIG_SAMSUNG_KERNEL_DEBUG
++#ifdef CONFIG_SAMSUNG_LOG_BUF
++		if (a_log_sched && log_active) {
++			log_idx++;
++			if ((unsigned int)log_idx >= SCHED_LOG_MAX)
++				log_idx = 0;
++
++			a_log_sched[log_idx].time = cpu_clock(cpu);
++			a_log_sched[log_idx].cpu = cpu;
++			a_log_sched[log_idx].pid = rq->curr->pid;
++			memcpy(a_log_sched[log_idx].task, rq->curr->comm, TASK_COMM_LEN);
++		} else if (log_buf_sched) {
++			a_log_sched = (sched_log_t*)log_buf_sched;
++		}
++#endif
++#endif /* CONFIG_SAMSUNG_KERNEL_DEBUG */
+ 		if (rt_task(next))
+ 			unstick_task(rq, prev);
+ 		sched_info_switch(prev, next);

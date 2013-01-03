@@ -1,0 +1,311 @@
+From 448f5791aba17116af30918c74904b97c214908b Mon Sep 17 00:00:00 2001
+From: Ezekeel <notezekeel@googlemail.com>
+Date: Sun, 8 Apr 2012 16:10:33 +0200
+Subject: [PATCH] Ezekeel FSync Control
+
+Conflicts:
+
+	drivers/misc/Kconfig
+	fs/sync.c
+---
+ drivers/misc/Kconfig         |    6 +++
+ drivers/misc/Makefile        |    2 +
+ drivers/misc/fsync_control.c |  110 ++++++++++++++++++++++++++++++++++++++++++
+ fs/ext4/mballoc.c            |    6 ++-
+ fs/sync.c                    |   48 +++++++++++++++++-
+ 5 files changed, 168 insertions(+), 4 deletions(-)
+ create mode 100644 drivers/misc/fsync_control.c
+
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index 5fad07f..0106717 100755
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -627,4 +627,10 @@ config WIRELESS_PMFAST
+          Say Y here to us PM_FAST for wireless power management.
+          Uses more power but it better at keeping connections.
+          
++config FSYNC_CONTROL
++        bool "Support for FSync Control"
++        default y
++        help
++          Say Y here to enable FSync Control
++
+ endif # MISC_DEVICES
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index 8d85712..4a71cc4 100755
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -56,6 +56,7 @@ obj-$(CONFIG_SENSORS_KR3DM)	+= kr3dm.o
+ obj-$(CONFIG_PN544)		+= pn544.o
+ obj-$(CONFIG_SAMSUNG_JACK)	+= sec_jack.o
+ obj-$(CONFIG_USB_SWITCH_FSA9480)	+= fsa9480.o
++
+ obj-$(CONFIG_SAMSUNG_MODEMCTL) += samsung_modemctl/
+ obj-$(CONFIG_GENERIC_BLN)	+= bln.o
+ obj-$(CONFIG_BLD)		+= bld.o
+@@ -63,3 +64,4 @@ obj-$(CONFIG_BLD)		+= bld.o
+ obj-$(CONFIG_CUSTOM_VOLTAGE)	+= custom_voltage.o
+ obj-$(CONFIG_TOUCH_WAKE)	+= touch_wake.o
+ obj-$(CONFIG_CPU_DIDLE)		+= deep_idle.o
++obj-$(CONFIG_FSYNC_CONTROL)	+= fsync_control.o
+diff --git a/drivers/misc/fsync_control.c b/drivers/misc/fsync_control.c
+new file mode 100644
+index 0000000..eceb8f7
+--- /dev/null
++++ b/drivers/misc/fsync_control.c
+@@ -0,0 +1,110 @@
++/* drivers/misc/fsync_control.c
++ *
++ * Copyright 2012  Ezekeel
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/init.h>
++#include <linux/device.h>
++#include <linux/miscdevice.h>
++
++#define FSYNCCONTROL_VERSION 1
++
++static bool fsync_enabled = true;
++
++bool fsynccontrol_fsync_enabled()
++{
++    return fsync_enabled;
++}
++EXPORT_SYMBOL(fsynccontrol_fsync_enabled);
++
++static ssize_t fsynccontrol_status_read(struct device * dev, struct device_attribute * attr, char * buf)
++{
++    return sprintf(buf, "%u\n", (fsync_enabled ? 1 : 0));
++}
++
++static ssize_t fsynccontrol_status_write(struct device * dev, struct device_attribute * attr, const char * buf, size_t size)
++{
++    unsigned int data;
++
++    if(sscanf(buf, "%u\n", &data) == 1) 
++	{
++	    if (data == 1) 
++		{
++		    pr_info("%s: FSYNCCONTROL fsync enabled\n", __FUNCTION__);
++
++		    fsync_enabled = true;
++
++		} 
++	    else if (data == 0) 
++		{
++		    pr_info("%s: FSYNCCONTROL fsync disabled\n", __FUNCTION__);
++
++		    fsync_enabled = false;
++		} 
++	    else 
++		{
++		    pr_info("%s: invalid input range %u\n", __FUNCTION__, data);
++		}
++	} 
++    else 
++	{
++	    pr_info("%s: invalid input\n", __FUNCTION__);
++	}
++
++    return size;
++}
++
++static ssize_t fsynccontrol_version(struct device * dev, struct device_attribute * attr, char * buf)
++{
++    return sprintf(buf, "%u\n", FSYNCCONTROL_VERSION);
++}
++
++static DEVICE_ATTR(fsync_enabled, S_IRUGO | S_IWUGO, fsynccontrol_status_read, fsynccontrol_status_write);
++static DEVICE_ATTR(version, S_IRUGO , fsynccontrol_version, NULL);
++
++static struct attribute *fsynccontrol_attributes[] = 
++    {
++	&dev_attr_fsync_enabled.attr,
++	&dev_attr_version.attr,
++	NULL
++    };
++
++static struct attribute_group fsynccontrol_group = 
++    {
++	.attrs  = fsynccontrol_attributes,
++    };
++
++static struct miscdevice fsynccontrol_device = 
++    {
++	.minor = MISC_DYNAMIC_MINOR,
++	.name = "fsynccontrol",
++    };
++
++static int __init fsynccontrol_init(void)
++{
++    int ret;
++
++    pr_info("%s misc_register(%s)\n", __FUNCTION__, fsynccontrol_device.name);
++
++    ret = misc_register(&fsynccontrol_device);
++
++    if (ret) 
++	{
++	    pr_err("%s misc_register(%s) fail\n", __FUNCTION__, fsynccontrol_device.name);
++	    return 1;
++	}
++
++    if (sysfs_create_group(&fsynccontrol_device.this_device->kobj, &fsynccontrol_group) < 0) 
++	{
++	    pr_err("%s sysfs_create_group fail\n", __FUNCTION__);
++	    pr_err("Failed to create sysfs group for device (%s)!\n", fsynccontrol_device.name);
++	}
++
++    return 0;
++}
++
++device_initcall(fsynccontrol_init);
+diff --git a/fs/ext4/mballoc.c b/fs/ext4/mballoc.c
+index 1f183eb..1831c0b 100644
+--- a/fs/ext4/mballoc.c
++++ b/fs/ext4/mballoc.c
+@@ -2528,6 +2528,9 @@ int ext4_mb_release(struct super_block *sb)
+ 	struct ext4_sb_info *sbi = EXT4_SB(sb);
+ 	struct kmem_cache *cachep = get_groupinfo_cache(sb->s_blocksize_bits);
+ 
++    if (sbi->s_proc)
++        remove_proc_entry("mb_groups", sbi->s_proc);
++    
+ 	if (sbi->s_group_info) {
+ 		for (i = 0; i < ngroups; i++) {
+ 			grinfo = ext4_get_group_info(sb, i);
+@@ -2575,8 +2578,6 @@ int ext4_mb_release(struct super_block *sb)
+ 	}
+ 
+ 	free_percpu(sbi->s_locality_groups);
+-	if (sbi->s_proc)
+-		remove_proc_entry("mb_groups", sbi->s_proc);
+ 
+ 	return 0;
+ }
+@@ -4584,6 +4585,7 @@ void ext4_free_blocks(handle_t *handle, struct inode *inode,
+ 		 */
+ 		new_entry = kmem_cache_alloc(ext4_free_ext_cachep, GFP_NOFS);
+ 		if (!new_entry) {
++            ext4_mb_unload_buddy(&e4b);
+ 			err = -ENOMEM;
+ 			goto error_return;
+ 		}
+diff --git a/fs/sync.c b/fs/sync.c
+index 5329e3c..c175cbe 100644
+--- a/fs/sync.c
++++ b/fs/sync.c
+@@ -21,6 +21,10 @@
+ #define VALID_FLAGS (SYNC_FILE_RANGE_WAIT_BEFORE|SYNC_FILE_RANGE_WRITE| \
+ 			SYNC_FILE_RANGE_WAIT_AFTER)
+ 
++#ifdef CONFIG_FSYNC_CONTROL
++extern bool fsynccontrol_fsync_enabled();
++#endif
++
+ /*
+  * Do the filesystem syncing work. For simple filesystems
+  * writeback_inodes_sb(sb) just dirties buffers with inodes so we have to
+@@ -139,6 +143,11 @@ void emergency_sync(void)
+ 	int ret;
+ 	int fput_needed;
+ 
++#ifdef CONFIG_FSYNC_CONTROL
++	if (!fsynccontrol_fsync_enabled())
++	    return 0;
++#endif
++
+ 	file = fget_light(fd, &fput_needed);
+ 	if (!file)
+ 		return -EBADF;
+@@ -168,6 +177,11 @@ int vfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
+ 	struct address_space *mapping = file->f_mapping;
+ 	int err, ret;
+ 
++#ifdef CONFIG_FSYNC_CONTROL
++	if (!fsynccontrol_fsync_enabled())
++	    return 0;
++#endif
++
+ 	if (!file->f_op || !file->f_op->fsync) {
+ 		ret = -EINVAL;
+ 		goto out;
+@@ -200,6 +214,11 @@ int vfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
+  */
+ int vfs_fsync(struct file *file, int datasync)
+ {
++#ifdef CONFIG_FSYNC_CONTROL
++	if (!fsynccontrol_fsync_enabled())
++	    return 0;
++#endif
++
+ 	return vfs_fsync_range(file, 0, LLONG_MAX, datasync);
+ }
+ EXPORT_SYMBOL(vfs_fsync);
+@@ -209,6 +228,11 @@ static int do_fsync(unsigned int fd, int datasync)
+ 	struct file *file;
+ 	int ret = -EBADF;
+ 
++#ifdef CONFIG_FSYNC_CONTROL
++	if (!fsynccontrol_fsync_enabled())
++	    return 0;
++#endif
++
+ 	file = fget(fd);
+ 	if (file) {
+ 		ret = vfs_fsync(file, datasync);
+@@ -219,12 +243,22 @@ static int do_fsync(unsigned int fd, int datasync)
+ 
+ SYSCALL_DEFINE1(fsync, unsigned int, fd)
+ {
+-	return 0;
++#ifdef CONFIG_FSYNC_CONTROL
++	if (!fsynccontrol_fsync_enabled())
++	    return 0;
++#endif
++
++	return do_fsync(fd, 0);
+ }
+ 
+ SYSCALL_DEFINE1(fdatasync, unsigned int, fd)
+ {
+-	return 0;
++#ifdef CONFIG_FSYNC_CONTROL
++	if (!fsynccontrol_fsync_enabled())
++	    return 0;
++#endif
++
++	return do_fsync(fd, 1);
+ }
+ 
+ /**
+@@ -237,6 +271,11 @@ static int do_fsync(unsigned int fd, int datasync)
+  */
+ int generic_write_sync(struct file *file, loff_t pos, loff_t count)
+ {
++#ifdef CONFIG_FSYNC_CONTROL
++	if (!fsynccontrol_fsync_enabled())
++	    return 0;
++#endif
++
+ 	if (!(file->f_flags & O_DSYNC) && !IS_SYNC(file->f_mapping->host))
+ 		return 0;
+ 	return vfs_fsync_range(file, pos, pos + count - 1,
+@@ -302,6 +341,11 @@ int generic_write_sync(struct file *file, loff_t pos, loff_t count)
+ 	int fput_needed;
+ 	umode_t i_mode;
+ 
++#ifdef CONFIG_FSYNC_CONTROL
++	if (!fsynccontrol_fsync_enabled())
++	    return 0;
++#endif
++
+ 	ret = -EINVAL;
+ 	if (flags & ~VALID_FLAGS)
+ 		goto out;
+-- 
+1.7.10

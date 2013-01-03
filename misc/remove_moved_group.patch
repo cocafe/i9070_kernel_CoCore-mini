@@ -1,0 +1,79 @@
+Subject: sched: fair: remove moved_group()
+From: Peter Zijlstra <a.p.zijlstra@chello.nl>
+
+Now that all tasks are in a single RQ again tasks in different groups are
+comparable again, hence we no longer require a notification when a task is
+moved between groups.
+
+Signed-off-by: Peter Zijlstra <a.p.zijlstra@chello.nl>
+Signed-off-by: Ingo Molnar <mingo@elte.hu>
+---
+ include/linux/sched.h |    4 ----
+ kernel/sched.c        |    5 -----
+ kernel/sched_fair.c   |   14 --------------
+ 3 files changed, 23 deletions(-)
+
+Index: linux/include/linux/sched.h
+===================================================================
+--- linux.orig/include/linux/sched.h
++++ linux/include/linux/sched.h
+@@ -926,10 +926,6 @@ struct sched_class {
+ 			     int running);
+ 	void (*prio_changed) (struct rq *this_rq, struct task_struct *task,
+ 			     int oldprio, int running);
+-
+-#ifdef CONFIG_FAIR_GROUP_SCHED
+-	void (*moved_group) (struct task_struct *p);
+-#endif
+ };
+ 
+ struct load_weight {
+Index: linux/kernel/sched.c
+===================================================================
+--- linux.orig/kernel/sched.c
++++ linux/kernel/sched.c
+@@ -8752,11 +8752,6 @@ void sched_move_task(struct task_struct 
+ 
+ 	set_task_rq(tsk, task_cpu(tsk));
+ 
+-#ifdef CONFIG_FAIR_GROUP_SCHED
+-	if (tsk->sched_class->moved_group)
+-		tsk->sched_class->moved_group(tsk);
+-#endif
+-
+ 	if (unlikely(running))
+ 		tsk->sched_class->set_curr_task(rq);
+ 	if (on_rq)
+Index: linux/kernel/sched_fair.c
+===================================================================
+--- linux.orig/kernel/sched_fair.c
++++ linux/kernel/sched_fair.c
+@@ -1537,16 +1537,6 @@ static void set_curr_task_fair(struct rq
+ 		set_next_entity(cfs_rq_of(se), se);
+ }
+ 
+-#ifdef CONFIG_FAIR_GROUP_SCHED
+-static void moved_group_fair(struct task_struct *p)
+-{
+-	struct cfs_rq *cfs_rq = task_cfs_rq(p);
+-
+-	update_curr(cfs_rq);
+-	place_entity(cfs_rq, &p->se, 1);
+-}
+-#endif
+-
+ /*
+  * All the scheduling class methods:
+  */
+@@ -1575,10 +1565,6 @@ static const struct sched_class fair_sch
+ 
+ 	.prio_changed		= prio_changed_fair,
+ 	.switched_to		= switched_to_fair,
+-
+-#ifdef CONFIG_FAIR_GROUP_SCHED
+-	.moved_group		= moved_group_fair,
+-#endif
+ };
+ 
+ #ifdef CONFIG_SCHED_DEBUG
+

@@ -1,0 +1,101 @@
+From 529f6f62f240fbcca1833ff759268ed8f23876f2 Mon Sep 17 00:00:00 2001
+From: hafidzduddin <hafidzduddin@gmail.com>
+Date: Thu, 29 Nov 2012 05:35:52 +0700
+Subject: [PATCH] CPU Tweak
+
+---
+ kernel/include/linux/percpu.h |   71 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 71 insertions(+)
+
+diff --git a/kernel/include/linux/percpu.h b/kernel/include/linux/percpu.h
+index d3a38d6..f12fb5f 100644
+--- a/kernel/include/linux/percpu.h
++++ b/kernel/include/linux/percpu.h
+@@ -242,6 +242,21 @@ static inline void *pcpu_lpage_remapped(void *kaddr)
+ 	pscr_ret__;							\
+ })
+ 
++#define __pcpu_size_call_return2(stem, variable, ...)			\
++({									\
++	typeof(variable) pscr2_ret__;					\
++	__verify_pcpu_ptr(&(variable));					\
++	switch(sizeof(variable)) {					\
++	case 1: pscr2_ret__ = stem##1(variable, __VA_ARGS__); break;	\
++	case 2: pscr2_ret__ = stem##2(variable, __VA_ARGS__); break;	\
++	case 4: pscr2_ret__ = stem##4(variable, __VA_ARGS__); break;	\
++	case 8: pscr2_ret__ = stem##8(variable, __VA_ARGS__); break;	\
++	default:							\
++		__bad_size_call_parameter(); break;			\
++	}								\
++	pscr2_ret__;							\
++})
++
+ #define __pcpu_size_call(stem, variable, ...)				\
+ do {									\
+ 	__verify_pcpu_ptr(&(variable));					\
+@@ -515,6 +530,62 @@ static inline void *pcpu_lpage_remapped(void *kaddr)
+ # define __this_cpu_or(pcp, val)	__pcpu_size_call(__this_cpu_or_, (pcp), (val))
+ #endif
+ 
++#define _this_cpu_generic_add_return(pcp, val)				\
++({									\
++	typeof(pcp) ret__;						\
++	preempt_disable();						\
++	__this_cpu_add(pcp, val);					\
++	ret__ = __this_cpu_read(pcp);					\
++	preempt_enable();						\
++	ret__;								\
++})
++
++#ifndef this_cpu_add_return
++# ifndef this_cpu_add_return_1
++#  define this_cpu_add_return_1(pcp, val)	_this_cpu_generic_add_return(pcp, val)
++# endif
++# ifndef this_cpu_add_return_2
++#  define this_cpu_add_return_2(pcp, val)	_this_cpu_generic_add_return(pcp, val)
++# endif
++# ifndef this_cpu_add_return_4
++#  define this_cpu_add_return_4(pcp, val)	_this_cpu_generic_add_return(pcp, val)
++# endif
++# ifndef this_cpu_add_return_8
++#  define this_cpu_add_return_8(pcp, val)	_this_cpu_generic_add_return(pcp, val)
++# endif
++# define this_cpu_add_return(pcp, val)	__pcpu_size_call_return2(this_cpu_add_return_, pcp, val)
++#endif
++
++#define this_cpu_sub_return(pcp, val)	this_cpu_add_return(pcp, -(val))
++#define this_cpu_inc_return(pcp)	this_cpu_add_return(pcp, 1)
++#define this_cpu_dec_return(pcp)	this_cpu_add_return(pcp, -1)
++
++#define __this_cpu_generic_add_return(pcp, val)				\
++({									\
++	__this_cpu_add(pcp, val);					\
++	__this_cpu_read(pcp);						\
++})
++
++#ifndef __this_cpu_add_return
++# ifndef __this_cpu_add_return_1
++#  define __this_cpu_add_return_1(pcp, val)	__this_cpu_generic_add_return(pcp, val)
++# endif
++# ifndef __this_cpu_add_return_2
++#  define __this_cpu_add_return_2(pcp, val)	__this_cpu_generic_add_return(pcp, val)
++# endif
++# ifndef __this_cpu_add_return_4
++#  define __this_cpu_add_return_4(pcp, val)	__this_cpu_generic_add_return(pcp, val)
++# endif
++# ifndef __this_cpu_add_return_8
++#  define __this_cpu_add_return_8(pcp, val)	__this_cpu_generic_add_return(pcp, val)
++# endif
++# define __this_cpu_add_return(pcp, val)	__pcpu_size_call_return2(this_cpu_add_return_, pcp, val)
++#endif
++
++#define __this_cpu_sub_return(pcp, val)	this_cpu_add_return(pcp, -(val))
++#define __this_cpu_inc_return(pcp)	this_cpu_add_return(pcp, 1)
++#define __this_cpu_dec_return(pcp)	this_cpu_add_return(pcp, -1)
++
+ #ifndef __this_cpu_xor
+ # ifndef __this_cpu_xor_1
+ #  define __this_cpu_xor_1(pcp, val)	__this_cpu_generic_to_op((pcp), (val), ^=)
+-- 
+1.7.10
+

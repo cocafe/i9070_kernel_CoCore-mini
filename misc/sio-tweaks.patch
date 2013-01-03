@@ -1,0 +1,24 @@
+From fbd953c5c67e961e15bd717538c78cda62c612e3 Mon Sep 17 00:00:00 2001
+From: pinkflozd <lk@varjanta.com>
+Date: Fri, 7 Oct 2011 11:31:31 +0200
+Subject: [PATCH] SIO tweak
+
+---
+ block/sio-iosched.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/block/sio-iosched.c b/block/sio-iosched.c
+index 8f0beb9..ec22934 100644
+--- a/block/sio-iosched.c
++++ b/block/sio-iosched.c
+@@ -28,7 +28,7 @@ enum {
+ /* Tunables */
+ static const int sync_expire = HZ / 2;	/* max time before a sync is submitted. */
+ static const int async_expire = 5 * HZ;	/* ditto for async, these limits are SOFT! */
+-static const int fifo_batch = 16;	/* # of sequential requests treated as one
++static const int fifo_batch = 1;	/* # of sequential requests treated as one
+ 					   by the above parameters. For throughput. */
+ 
+ /* Elevator data */
+-- 
+1.7.10

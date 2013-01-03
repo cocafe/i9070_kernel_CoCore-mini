@@ -1,0 +1,272 @@
+From dbb0743a58825d94f1b3fdfa90a8d61dfef88f7b Mon Sep 17 00:00:00 2001
+From: Adam Gruchala <adam.gruchala@intel.com>
+Date: Wed, 1 Jun 2011 22:31:03 +0000
+Subject: [PATCH] isci: Added support for C0 to SCU Driver
+
+C0 silicon updates the pci revision id and requires new AFE parameters
+for phy signal integrity.  Support for previous silicon revisions is
+deprecated (it's also broken for the theoretical case of multiple
+controllers at different silicon revisions, all the more reason to get
+it removed as soon as possible)
+
+Signed-off-by: Adam Gruchala <adam.gruchala@intel.com>
+[fixed up deprecated silicon support]
+Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+---
+ drivers/scsi/isci/firmware/create_fw.h |    8 +++----
+ drivers/scsi/isci/host.c               |   40 +++++++++++++++++++++++++++-----
+ drivers/scsi/isci/host.h               |    8 ++++++-
+ drivers/scsi/isci/init.c               |   32 ++++++++++++-------------
+ drivers/scsi/isci/probe_roms.c         |   15 ++++++++++++
+ firmware/isci/isci_firmware.bin.ihex   |   24 +++++++++----------
+ 6 files changed, 88 insertions(+), 39 deletions(-)
+
+diff --git a/drivers/scsi/isci/firmware/create_fw.h b/drivers/scsi/isci/firmware/create_fw.h
+index 9f9afbd..5f29882 100644
+--- a/drivers/scsi/isci/firmware/create_fw.h
++++ b/drivers/scsi/isci/firmware/create_fw.h
+@@ -65,10 +65,10 @@
+ static const int enable_ssc;
+ 
+ /* AFE_TX_AMP_CONTROL */
+-static const unsigned int afe_tx_amp_control0 = 0x000e7c03;
+-static const unsigned int afe_tx_amp_control1 = 0x000e7c03;
+-static const unsigned int afe_tx_amp_control2 = 0x000e7c03;
+-static const unsigned int afe_tx_amp_control3 = 0x000e7c03;
++static const unsigned int afe_tx_amp_control0 = 0x000bdd08;
++static const unsigned int afe_tx_amp_control1 = 0x000ffc00;
++static const unsigned int afe_tx_amp_control2 = 0x000b7c09;
++static const unsigned int afe_tx_amp_control3 = 0x000afc6e;
+ 
+ static const char blob_name[] = "isci_firmware.bin";
+ static const char sig[] = "ISCUOEMB";
+diff --git a/drivers/scsi/isci/host.c b/drivers/scsi/isci/host.c
+index f502882..009c0ee 100644
+--- a/drivers/scsi/isci/host.c
++++ b/drivers/scsi/isci/host.c
+@@ -2070,13 +2070,13 @@ static void scic_sds_controller_afe_initialization(struct scic_sds_controller *s
+ 		writel(0x00005500, &scic->scu_registers->afe.afe_bias_control);
+ 	else if (is_a2())
+ 		writel(0x00005A00, &scic->scu_registers->afe.afe_bias_control);
+-	else if (is_b0())
++	else if (is_b0() || is_c0())
+ 		writel(0x00005F00, &scic->scu_registers->afe.afe_bias_control);
+ 
+ 	udelay(AFE_REGISTER_WRITE_DELAY);
+ 
+ 	/* Enable PLL */
+-	if (is_b0())
++	if (is_b0() || is_c0())
+ 		writel(0x80040A08, &scic->scu_registers->afe.afe_pll_control0);
+ 	else
+ 		writel(0x80040908, &scic->scu_registers->afe.afe_pll_control0);
+@@ -2102,6 +2102,16 @@ static void scic_sds_controller_afe_initialization(struct scic_sds_controller *s
+ 			 /* Configure transmitter SSC parameters */
+ 			writel(0x00030000, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_tx_ssc_control);
+ 			udelay(AFE_REGISTER_WRITE_DELAY);
++		} else if (is_c0()) {
++			 /* Configure transmitter SSC parameters */
++			writel(0x0003000, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_tx_ssc_control);
++			udelay(AFE_REGISTER_WRITE_DELAY);
++
++			/*
++			 * All defaults, except the Receive Word Alignament/Comma Detect
++			 * Enable....(0xe800) */
++			writel(0x00004500, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_xcvr_control0);
++			udelay(AFE_REGISTER_WRITE_DELAY);
+ 		} else {
+ 			/*
+ 			 * All defaults, except the Receive Word Alignament/Comma Detect
+@@ -2120,15 +2130,23 @@ static void scic_sds_controller_afe_initialization(struct scic_sds_controller *s
+ 			writel(0x000003D4, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_channel_control);
+ 		else if (is_a2())
+ 			writel(0x000003F0, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_channel_control);
+-		else {
++		else if (is_b0()) {
+ 			 /* Power down TX and RX (PWRDNTX and PWRDNRX) */
+-			writel(0x000003d7, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_channel_control);
++			writel(0x000003D7, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_channel_control);
++			udelay(AFE_REGISTER_WRITE_DELAY);
++
++			/*
++			 * Power up TX and RX out from power down (PWRDNTX and PWRDNRX)
++			 * & increase TX int & ext bias 20%....(0xe85c) */
++			writel(0x000003D4, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_channel_control);
++		} else {
++			writel(0x000001E7, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_channel_control);
+ 			udelay(AFE_REGISTER_WRITE_DELAY);
+ 
+ 			/*
+ 			 * Power up TX and RX out from power down (PWRDNTX and PWRDNRX)
+ 			 * & increase TX int & ext bias 20%....(0xe85c) */
+-			writel(0x000003d4, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_channel_control);
++			writel(0x000001E4, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_channel_control);
+ 		}
+ 		udelay(AFE_REGISTER_WRITE_DELAY);
+ 
+@@ -2149,12 +2167,22 @@ static void scic_sds_controller_afe_initialization(struct scic_sds_controller *s
+ 			writel(0x3F09983F, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_rx_ssc_control0);
+ 		else if (is_a2())
+ 			writel(0x3F11103F, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_rx_ssc_control0);
+-		else {
++		else if (is_b0()) {
+ 			writel(0x3F11103F, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_rx_ssc_control0);
+ 			udelay(AFE_REGISTER_WRITE_DELAY);
+ 			/* Enable TX equalization (0xe824) */
+ 			writel(0x00040000, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_tx_control);
++		} else {
++			writel(0x0140DF0F, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_rx_ssc_control1);
++			udelay(AFE_REGISTER_WRITE_DELAY);
++
++			writel(0x3F6F103F, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_rx_ssc_control0);
++			udelay(AFE_REGISTER_WRITE_DELAY);
++
++			/* Enable TX equalization (0xe824) */
++			writel(0x00040000, &scic->scu_registers->afe.scu_afe_xcvr[phy_id].afe_tx_control);
+ 		}
++
+ 		udelay(AFE_REGISTER_WRITE_DELAY);
+ 
+ 		writel(oem_phy->afe_tx_amp_control0,
+diff --git a/drivers/scsi/isci/host.h b/drivers/scsi/isci/host.h
+index 4020cf7..04698dd 100644
+--- a/drivers/scsi/isci/host.h
++++ b/drivers/scsi/isci/host.h
+@@ -675,6 +675,7 @@ enum {
+ 	ISCI_SI_REVA0,
+ 	ISCI_SI_REVA2,
+ 	ISCI_SI_REVB0,
++	ISCI_SI_REVC0
+ };
+ 
+ extern int isci_si_rev;
+@@ -691,7 +692,12 @@ static inline bool is_a2(void)
+ 
+ static inline bool is_b0(void)
+ {
+-	return isci_si_rev > ISCI_SI_REVA2;
++	return isci_si_rev == ISCI_SI_REVB0;
++}
++
++static inline bool is_c0(void)
++{
++	return isci_si_rev > ISCI_SI_REVB0;
+ }
+ 
+ void scic_sds_controller_post_request(struct scic_sds_controller *scic,
+diff --git a/drivers/scsi/isci/init.c b/drivers/scsi/isci/init.c
+index bda7016..bbfb6e5 100644
+--- a/drivers/scsi/isci/init.c
++++ b/drivers/scsi/isci/init.c
+@@ -437,27 +437,27 @@ static struct isci_host *isci_host_alloc(struct pci_dev *pdev, int id)
+ 
+ static void check_si_rev(struct pci_dev *pdev)
+ {
+-	if (num_controllers(pdev) > 1)
++	switch (pdev->revision) {
++	case 0:
++	case 1:
++		/* if the id is ambiguous don't update isci_si_rev */
++		break;
++	case 3:
++		isci_si_rev = ISCI_SI_REVA2;
++		break;
++	case 4:
+ 		isci_si_rev = ISCI_SI_REVB0;
+-	else {
+-		switch (pdev->revision) {
+-		case 0:
+-		case 1:
+-			/* if the id is ambiguous don't update isci_si_rev */
+-			break;
+-		case 3:
+-			isci_si_rev = ISCI_SI_REVA2;
+-			break;
+-		default:
+-		case 4:
+-			isci_si_rev = ISCI_SI_REVB0;
+-			break;
+-		}
++		break;
++	default:
++	case 5:
++		isci_si_rev = ISCI_SI_REVC0;
++		break;
+ 	}
+ 
+ 	dev_info(&pdev->dev, "driver configured for %s silicon (rev: %d)\n",
+ 		 isci_si_rev == ISCI_SI_REVA0 ? "A0" :
+-		 isci_si_rev == ISCI_SI_REVA2 ? "A2" : "B0", pdev->revision);
++		 isci_si_rev == ISCI_SI_REVA2 ? "A2" :
++		 isci_si_rev == ISCI_SI_REVB0 ? "B0" : "C0", pdev->revision);
+ 
+ }
+ 
+diff --git a/drivers/scsi/isci/probe_roms.c b/drivers/scsi/isci/probe_roms.c
+index 084fdc6..bc52a61 100644
+--- a/drivers/scsi/isci/probe_roms.c
++++ b/drivers/scsi/isci/probe_roms.c
+@@ -136,6 +136,7 @@ enum sci_status isci_parse_oem_parameters(union scic_oem_parameters *oem_params,
+ struct isci_orom *isci_request_firmware(struct pci_dev *pdev, const struct firmware *fw)
+ {
+ 	struct isci_orom *orom = NULL, *data;
++	int i, j;
+ 
+ 	if (request_firmware(&fw, ISCI_FW_NAME, &pdev->dev) != 0)
+ 		return NULL;
+@@ -155,6 +156,20 @@ struct isci_orom *isci_request_firmware(struct pci_dev *pdev, const struct firmw
+ 
+ 	memcpy(orom, fw->data, fw->size);
+ 
++	/*
++	 * deprecated: override default amp_control for pre-preproduction
++	 * silicon revisions
++	 */
++	if (isci_si_rev <= ISCI_SI_REVB0)
++		goto out;
++
++	for (i = 0; i < ARRAY_SIZE(orom->ctrl); i++)
++		for (j = 0; j < ARRAY_SIZE(orom->ctrl[i].phys); j++) {
++			orom->ctrl[i].phys[j].afe_tx_amp_control0 = 0xe7c03;
++			orom->ctrl[i].phys[j].afe_tx_amp_control1 = 0xe7c03;
++			orom->ctrl[i].phys[j].afe_tx_amp_control2 = 0xe7c03;
++			orom->ctrl[i].phys[j].afe_tx_amp_control3 = 0xe7c03;
++		}
+  out:
+ 	release_firmware(fw);
+ 
+diff --git a/firmware/isci/isci_firmware.bin.ihex b/firmware/isci/isci_firmware.bin.ihex
+index 13a9655..2e66195 100644
+--- a/firmware/isci/isci_firmware.bin.ihex
++++ b/firmware/isci/isci_firmware.bin.ihex
+@@ -1,16 +1,16 @@
+ :10000000495343554F454D42E80018100002000087
+ :1000100000000000000000000101000000000000DE
+-:10002000FFFFCF5F01000000037C0E00037C0E0089
+-:10003000037C0E00037C0E00FFFFCF5F0100000079
+-:10004000037C0E00037C0E00037C0E00037C0E007C
+-:10005000FFFFCF5F01000000037C0E00037C0E0059
+-:10006000037C0E00037C0E00FFFFCF5F0100000049
+-:10007000037C0E00037C0E00037C0E00037C0E004C
++:10002000FFFFCF5F0100000008DD0B0000FC0F00A8
++:10003000097C0B006EFC0A00FFFFCF5F010000008F
++:1000400008DD0B0000FC0F00097C0B006EFC0A00B1
++:10005000FFFFCF5F0100000008DD0B0000FC0F0078
++:10006000097C0B006EFC0A00FFFFCF5F010000005F
++:1000700008DD0B0000FC0F00097C0B006EFC0A0081
+ :100080000101000000000000FFFFCF5F0200000040
+-:10009000037C0E00037C0E00037C0E00037C0E002C
+-:1000A000FFFFCF5F02000000037C0E00037C0E0008
+-:1000B000037C0E00037C0E00FFFFCF5F02000000F8
+-:1000C000037C0E00037C0E00037C0E00037C0E00FC
+-:1000D000FFFFCF5F02000000037C0E00037C0E00D8
+-:0800E000037C0E00037C0E00FE
++:1000900008DD0B0000FC0F00097C0B006EFC0A0061
++:1000A000FFFFCF5F0200000008DD0B0000FC0F0027
++:1000B000097C0B006EFC0A00FFFFCF5F020000000E
++:1000C00008DD0B0000FC0F00097C0B006EFC0A0031
++:1000D000FFFFCF5F0200000008DD0B0000FC0F00F7
++:0800E000097C0B006EFC0A0014
+ :00000001FF
+-- 
+1.7.10

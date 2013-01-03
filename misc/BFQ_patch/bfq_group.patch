@@ -1,0 +1,45 @@
+From e8ad3bdc9a0a1f62a3454b8ef46eef8971bbe0b3 Mon Sep 17 00:00:00 2001
+From: Paolo Valente <paolo.valente@unimore.it>
+Date: Fri, 26 Feb 2010 22:19:41 +0100
+Subject: [PATCH 2/3] block: add cgroups, kconfig and build bits for BFQ
+
+Add a Kconfig option and do the related Makefile changes to compile
+the BFQ I/O scheduler.  Also let the cgroups subsystem know about the
+BFQ I/O controller.
+
+Signed-off-by: Fabio Checconi <fabio@gandalf.sssup.it>
+Signed-off-by: Paolo Valente <paolo.valente@unimore.it>
+---
+ block/Makefile                |    1 +
+ include/linux/cgroup_subsys.h |    6 ++++++
+ 2 files changed, 7 insertions(+), 0 deletions(-)
+
+diff --git a/block/Makefile b/block/Makefile
+index 0bb499a..99a93ef 100644
+--- a/block/Makefile
++++ b/block/Makefile
+@@ -12,6 +12,7 @@ obj-$(CONFIG_BLK_CGROUP)	+= blk-cgroup.o
+ obj-$(CONFIG_IOSCHED_NOOP)	+= noop-iosched.o
+ obj-$(CONFIG_IOSCHED_DEADLINE)	+= deadline-iosched.o
+ obj-$(CONFIG_IOSCHED_CFQ)	+= cfq-iosched.o
++obj-$(CONFIG_IOSCHED_BFQ)	+= bfq-iosched.o
+ 
+ obj-$(CONFIG_BLOCK_COMPAT)	+= compat_ioctl.o
+ obj-$(CONFIG_BLK_DEV_INTEGRITY)	+= blk-integrity.o
+diff --git a/include/linux/cgroup_subsys.h b/include/linux/cgroup_subsys.h
+index ccefff0..37f523b 100644
+--- a/include/linux/cgroup_subsys.h
++++ b/include/linux/cgroup_subsys.h
+@@ -66,3 +66,9 @@ SUBSYS(blkio)
+ #endif
+ 
+ /* */
++
++#ifdef CONFIG_CGROUP_BFQIO
++SUBSYS(bfqio)
++#endif
++
++/* */
+-- 
+1.7.0.4
+

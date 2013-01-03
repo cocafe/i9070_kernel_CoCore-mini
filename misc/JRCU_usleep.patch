@@ -1,0 +1,59 @@
+From 4e7cf777e7e9018f76bb4f7ae9d176023fc7e2e5 Mon Sep 17 00:00:00 2001
+From: craig <hot2009wheels@hotmail.com>
+Date: Thu, 13 Oct 2011 00:10:29 +0100
+Subject: [PATCH] Added usleep_range timer as it's needed for JRCU to compile,
+ added #if defind so only used when compiling with JRCU
+
+---
+ include/linux/delay.h |    3 +++
+ kernel/timer.c        |   24 ++++++++++++++++++++++++
+ 2 files changed, 27 insertions(+)
+
+diff --git a/include/linux/delay.h b/include/linux/delay.h
+index fd832c6..244c09f 100644
+--- a/include/linux/delay.h
++++ b/include/linux/delay.h
+@@ -45,6 +45,9 @@ static inline void ndelay(unsigned long x)
+ void calibrate_delay(void);
+ void msleep(unsigned int msecs);
+ unsigned long msleep_interruptible(unsigned int msecs);
++#if defined(CONFIG_JRCU)
++void usleep_range(unsigned long min, unsigned long max);
++#endif
+ 
+ static inline void ssleep(unsigned int seconds)
+ {
+diff --git a/kernel/timer.c b/kernel/timer.c
+index e6ca0fc..17e5aad 100644
+--- a/kernel/timer.c
++++ b/kernel/timer.c
+@@ -1756,3 +1756,27 @@ unsigned long msleep_interruptible(unsigned int msecs)
+ }
+ 
+ EXPORT_SYMBOL(msleep_interruptible);
++
++#if defined(CONFIG_JRCU)
++static int __sched do_usleep_range(unsigned long min, unsigned long max)
++{
++	ktime_t kmin;
++	unsigned long delta;
++
++	kmin = ktime_set(0, min * NSEC_PER_USEC);
++	delta = (max - min) * NSEC_PER_USEC;
++	return schedule_hrtimeout_range(&kmin, delta, HRTIMER_MODE_REL);
++}
++
++/**
++ * usleep_range - Drop in replacement for udelay where wakeup is flexible
++ * @min: Minimum time in usecs to sleep
++ * @max: Maximum time in usecs to sleep
++ */
++void usleep_range(unsigned long min, unsigned long max)
++{
++	__set_current_state(TASK_UNINTERRUPTIBLE);
++	do_usleep_range(min, max);
++}
++EXPORT_SYMBOL(usleep_range);
++#endif /* JRCU */
+-- 
+1.7.10

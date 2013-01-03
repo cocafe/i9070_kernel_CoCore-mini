@@ -1,0 +1,55 @@
+From 673280b4fd539746db1045f348d9d21244d3d35b Mon Sep 17 00:00:00 2001
+From: AdiPat <adithemagnificent@gmail.com>
+Date: Sat, 27 Oct 2012 16:44:04 +0530
+Subject: [PATCH] Makefile Optimizations
+
+Signed-off-by: AdiPat <adithemagnificent@gmail.com>
+---
+ Makefile     |    6 ++++--
+ init/Kconfig |    5 ++++-
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 7c7aac9..0913f1b 100755
+--- a/Makefile
++++ b/Makefile
+@@ -375,8 +375,9 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
+ KBUILD_AFLAGS_KERNEL :=
+ KBUILD_CFLAGS_KERNEL :=
+ KBUILD_AFLAGS   := -D__ASSEMBLY__
+-KBUILD_AFLAGS_MODULE  := -DMODULE
+-KBUILD_CFLAGS_MODULE  := -DMODULE
++MODFLAGS        := -DMODULE -fgcse-lm -fgcse-sm -fsched-spec-load -fforce-addr -ffast-math -fsingle-precision-constant -mtune=cortex-a8 -marm -march=armv7-a -mfpu=neon -ftree-vectorize -funroll-loops
++KBUILD_AFLAGS_MODULE  := $(MODFLAGS)
++KBUILD_CFLAGS_MODULE  := $(MODFLAGS)
+ KBUILD_LDFLAGS_MODULE := -T $(srctree)/scripts/module-common.lds
+ 
+ # Read KERNELRELEASE from include/config/kernel.release (if it exists)
+@@ -567,6 +568,7 @@ else
+ KBUILD_CFLAGS	+= -O2
+ endif
+ 
++
+ include $(srctree)/arch/$(SRCARCH)/Makefile
+ 
+ ifneq ($(CONFIG_FRAME_WARN),0)
+diff --git a/init/Kconfig b/init/Kconfig
+index 861ae78..b801b3c 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -975,9 +975,12 @@ config CC_OPTIMIZE_FOR_SIZE
+ 	help
+ 	  Enabling this option will pass "-Os" instead of "-O2" to gcc
+ 	  resulting in a smaller kernel.
+-
+ 	  If unsure, say Y.
+ 
++config CC_OPTIMIZE_FAST
++	bool "Use -Ofast"
++
++
+ config SYSCTL
+ 	bool
+ 
+-- 
+1.7.10

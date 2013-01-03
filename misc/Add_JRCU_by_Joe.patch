@@ -1,0 +1,356 @@
+From d27a0080116674307ca063822ae785970d7d2e55 Mon Sep 17 00:00:00 2001
+From: craig <hot2009wheels@hotmail.com>
+Date: Wed, 12 Oct 2011 23:32:01 +0100
+Subject: [PATCH] Add JRCU by Joe Korty
+
+---
+ arch/x86/include/asm/thread_info.h |    1 +
+ include/linux/hardirq.h            |    8 ++++-
+ include/linux/kernel.h             |   11 +++++--
+ include/linux/preempt.h            |   31 ++++++++++++++++--
+ include/linux/rcupdate.h           |    2 ++
+ include/linux/sched.h              |    2 ++
+ init/Kconfig                       |   63 ++++++++++++++++++++++++++++++++++++
+ kernel/Makefile                    |    1 +
+ kernel/rcupdate.c                  |    4 +++
+ kernel/sched.c                     |   44 +++++++++++++++++++++++--
+ 10 files changed, 159 insertions(+), 8 deletions(-)
+
+diff --git a/arch/x86/include/asm/thread_info.h b/arch/x86/include/asm/thread_info.h
+index f0b6e5d..c0811ec 100644
+--- a/arch/x86/include/asm/thread_info.h
++++ b/arch/x86/include/asm/thread_info.h
+@@ -29,6 +29,7 @@ struct thread_info {
+ 	__u32			flags;		/* low level flags */
+ 	__u32			status;		/* thread synchronous flags */
+ 	__u32			cpu;		/* current CPU */
++#define HAVE_THREAD_INFO_CPU   1
+ 	int			preempt_count;	/* 0 => preemptable,
+ 						   <0 => BUG */
+ 	mm_segment_t		addr_limit;
+diff --git a/include/linux/hardirq.h b/include/linux/hardirq.h
+index 920add2..13fd174 100644
+--- a/include/linux/hardirq.h
++++ b/include/linux/hardirq.h
+@@ -145,7 +145,13 @@ static inline void account_system_vtime(struct task_struct *tsk)
+ extern void account_system_vtime(struct task_struct *tsk);
+ #endif
+ 
+-#if defined(CONFIG_NO_HZ)
++#if defined(CONFIG_JRCU)
++extern int rcu_nmi_seen;
++# define rcu_irq_enter() do { } while (0)
++# define rcu_irq_exit() do { } while (0)
++# define rcu_nmi_enter() do { rcu_nmi_seen = 1; } while (0)
++# define rcu_nmi_exit() do { } while (0)
++#elif defined(CONFIG_NO_HZ)
+ #if defined(CONFIG_TINY_RCU)
+ extern void rcu_enter_nohz(void);
+ extern void rcu_exit_nohz(void);
+diff --git a/include/linux/kernel.h b/include/linux/kernel.h
+index 8317ec4..b5a565b 100644
+--- a/include/linux/kernel.h
++++ b/include/linux/kernel.h
+@@ -128,11 +128,18 @@
+ struct pt_regs;
+ struct user;
+ 
++/* cannot bring in linux/rcupdate.h at this point */
++#ifdef CONFIG_JRCU
++extern void rcu_note_might_resched(void);
++#else
++#define rcu_note_might_resched()
++#endif /*JRCU */
++
+ #ifdef CONFIG_PREEMPT_VOLUNTARY
+ extern int _cond_resched(void);
+-# define might_resched() _cond_resched()
++# define might_resched() do { _cond_resched(); rcu_note_might_resched(); } while (0)
+ #else
+-# define might_resched() do { } while (0)
++# define might_resched() do { rcu_note_might_resched(); } while (0)
+ #endif
+ 
+ #ifdef CONFIG_DEBUG_SPINLOCK_SLEEP
+diff --git a/include/linux/preempt.h b/include/linux/preempt.h
+index 2e681d9..35872aa 100644
+--- a/include/linux/preempt.h
++++ b/include/linux/preempt.h
+@@ -10,18 +10,45 @@
+ #include <linux/linkage.h>
+ #include <linux/list.h>
+ 
++/* cannot include rcupdate.h here, so open-code this */
++
++#if defined(CONFIG_JRCU)
++# define __add_preempt_count(val) do { \
++	int newval = (preempt_count() += (val)); \
++	if (newval == (val)) \
++		smp_wmb(); \
++} while (0)
++#else
++# define __add_preempt_count(val) do { preempt_count() += (val); } while (0)
++#endif
++
++#if defined(CONFIG_JRCU_LAZY) || !defined(CONFIG_JRCU)
++# define __sub_preempt_count(val) do { preempt_count() -= (val); } while (0)
++#else
++# define __sub_preempt_count(val) do { \
++	int newval = (preempt_count() -= (val)); \
++	if (newval == 0) { \
++		/* race with preemption OK, preempt will do the mb for us */ \
++		smp_wmb(); \
++	} \
++} while (0)
++#endif
++
+ #if defined(CONFIG_DEBUG_PREEMPT) || defined(CONFIG_PREEMPT_TRACER)
+   extern void add_preempt_count(int val);
+   extern void sub_preempt_count(int val);
+ #else
+-# define add_preempt_count(val)	do { preempt_count() += (val); } while (0)
+-# define sub_preempt_count(val)	do { preempt_count() -= (val); } while (0)
++# define add_preempt_count(val) __add_preempt_count(val)
++# define sub_preempt_count(val) __sub_preempt_count(val)
+ #endif
+ 
+ #define inc_preempt_count() add_preempt_count(1)
+ #define dec_preempt_count() sub_preempt_count(1)
+ 
+ #define preempt_count()	(current_thread_info()->preempt_count)
++#ifdef CONFIG_PREEMPT_COUNT_CPU
++extern int preempt_count_cpu(int cpu);
++#endif
+ 
+ #ifdef CONFIG_PREEMPT
+ 
+diff --git a/include/linux/rcupdate.h b/include/linux/rcupdate.h
+index e03a863..67eb1d1 100644
+--- a/include/linux/rcupdate.h
++++ b/include/linux/rcupdate.h
+@@ -72,6 +72,8 @@ struct rcu_head {
+ #include <linux/rcutiny.h>
+ #elif defined(CONFIG_CLASSIC_RCU)
+ #include <linux/rcuclassic.h>
++#elif defined(CONFIG_JRCU)
++#include <linux/jrcu.h>
+ #else
+ #error "Unknown RCU implementation specified to kernel configuration"
+ #endif
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 8a8a99e..4e4cf93 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -2003,6 +2003,8 @@ static inline void idle_task_exit(void) {}
+ static inline void wake_up_idle_cpu(int cpu) { }
+ #endif
+ 
++extern void force_cpu_resched(int cpu);
++
+ extern unsigned int sysctl_sched_latency;
+ extern unsigned int sysctl_sched_min_granularity;
+ extern unsigned int sysctl_sched_wakeup_granularity;
+diff --git a/init/Kconfig b/init/Kconfig
+index 8ca7d48..705f7e6 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -384,6 +384,23 @@ config TREE_PREEMPT_RCU
+ 	  thousands of CPUs, but for which real-time response
+ 	  is also required.  It also scales down nicely to
+ 	  smaller systems.
++	  
++config JRCU
++	bool "A tiny single-CPU RCU for small SMP systems"
++	depends on PREEMPT
++	depends on SMP
++	select PREEMPT_COUNT_CPU
++	help
++	  This option selects a minimal-footprint RCU suitable for small SMP
++	  systems -- that is, those with fewer than 16 or perhaps 32, and
++	  certainly less than 64 processors.
++
++	  This RCU variant may be a good choice for systems with low latency
++	  requirements.  It does RCU garbage collection from a single CPU
++	  rather than have each CPU do its own.  This frees up all but one
++	  CPU from interference by this periodic requirement.
++
++	  Most users should say N here.
+ 
+ config TINY_RCU
+ 	bool "UP-only small-memory-footprint RCU"
+@@ -396,6 +413,52 @@ config TINY_RCU
+ 
+ endchoice
+ 
++config JRCU_DAEMON
++	bool
++	depends on JRCU
++	default y
++	help
++	  Required. The context switch when leaving the daemon is needed
++	  to get the CPU to reliably participate in end-of-batch processing.
++
++config JRCU_DAEMON_PRIO
++	int "JRCU Daemon priority"
++	depends on JRCU_DAEMON
++	default 0
++	help
++	  The JRCU daemon priority. If 0 then the daemon runs SCHED_OTHER.
++	  If >0 then the daemon runs SCHED_RR and its priority will be
++	  the value selected.  If <0 then SCHED_RR is again selected, but
++	  now its priority will be the biased downwards from the maximum
++	  possible Posix priority.
++
++config JRCU_LAZY
++	bool "Should JRCU be lazy recognizing end-of-batch"
++	depends on JRCU
++	default n
++	help
++	  If you say Y here, JRCU will on occasion fail to recognize
++	  end-of-batch for an rcu period or two.
++
++	  If you say N here, JRCU will be more aggressive; in fact it
++	  will always recognize end-of-batch at the earliest possible time.
++
++	  Being lazy should be fractionally more efficient in that JRCU
++	  inserts fewer memory barriers along some high performance kernel
++	  code paths.
++
++	  If unsure, say N.
++	  
++config PREEMPT_COUNT_CPU
++	# bool "Let one CPU look at another CPUs preemption count"
++	bool
++	default n
++	help
++	  If Y then the preempt_count_cpu() function will be compiled into
++	  the kernel.  Its existance impacts kernel performance slightly,
++	  so this option should be selected only if other kernel features
++	  that use preempt_count_cpu() are also selected.
++
+ config RCU_TRACE
+ 	bool "Enable tracing for RCU"
+ 	depends on TREE_RCU || TREE_PREEMPT_RCU
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 5376188..ed31f9c 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -84,6 +84,7 @@ obj-$(CONFIG_SECCOMP) += seccomp.o
+ obj-$(CONFIG_RCU_TORTURE_TEST) += rcutorture.o
+ obj-$(CONFIG_CLASSIC_RCU) += rcuclassic.o
+ obj-$(CONFIG_TREE_RCU) += rcutree.o
++obj-$(CONFIG_JRCU) += jrcu.o
+ obj-$(CONFIG_TREE_PREEMPT_RCU) += rcutree.o
+ obj-$(CONFIG_TREE_RCU_TRACE) += rcutree_trace.o
+ obj-$(CONFIG_TINY_RCU) += rcutiny.o
+diff --git a/kernel/rcupdate.c b/kernel/rcupdate.c
+index 72a8dc9..07104e8 100644
+--- a/kernel/rcupdate.c
++++ b/kernel/rcupdate.c
+@@ -114,3 +114,7 @@ int rcu_my_thread_group_empty(void)
+ }
+ EXPORT_SYMBOL_GPL(rcu_my_thread_group_empty);
+ #endif /* #ifdef CONFIG_PROVE_RCU */
++#ifndef CONFIG_JRCU
++
++
++#endif /* CONFIG_JRCU */
+diff --git a/kernel/sched.c b/kernel/sched.c
+index cb141fa..ed4fa02 100644
+--- a/kernel/sched.c
++++ b/kernel/sched.c
+@@ -1229,6 +1229,16 @@ static void resched_cpu(int cpu)
+ 	raw_spin_unlock_irqrestore(&rq->lock, flags);
+ }
+ 
++void force_cpu_resched(int cpu)
++{
++	struct rq *rq = cpu_rq(cpu);
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&rq->lock, flags);
++	resched_task(cpu_curr(cpu));
++	raw_spin_unlock_irqrestore(&rq->lock, flags);
++}
++
+ #ifdef CONFIG_NO_HZ
+ /*
+  * In the semi idle case, use the nearest busy cpu for migrating timers
+@@ -1334,6 +1344,11 @@ static void sched_rt_avg_update(struct rq *rq, u64 rt_delta)
+ static void sched_avg_update(struct rq *rq)
+ {
+ }
++
++void force_cpu_resched(int cpu)
++{
++	set_need_resched();
++}
+ #endif /* CONFIG_SMP */
+ 
+ #if BITS_PER_LONG == 32
+@@ -2726,6 +2741,24 @@ void sched_fork(struct task_struct *p, int clone_flags)
+ 	put_cpu();
+ }
+ 
++#ifdef CONFIG_PREEMPT_COUNT_CPU
++
++/*
++ * Fetch the preempt count of some cpu's current task.  Must be called
++ * with interrupts blocked.  Stale return value.
++ *
++ * No locking needed as this always wins the race with context-switch-out
++ * + task destruction, since that is so heavyweight.  The smp_rmb() is
++ * to protect the pointers in that race, not the data being pointed to
++ * (which, being guaranteed stale, can stand a bit of fuzziness).
++ */
++int preempt_count_cpu(int cpu)
++{
++	smp_rmb(); /* stop data prefetch until program ctr gets here */
++	return task_thread_info(cpu_curr(cpu))->preempt_count;
++}
++#endif
++
+ /*
+  * wake_up_new_task - wake up a newly created task for the first time.
+  *
+@@ -3880,7 +3913,7 @@ void __kprobes add_preempt_count(int val)
+ 	if (DEBUG_LOCKS_WARN_ON((preempt_count() < 0)))
+ 		return;
+ #endif
+-	preempt_count() += val;
++	__add_preempt_count(val);
+ #ifdef CONFIG_DEBUG_PREEMPT
+ 	/*
+ 	 * Spinlock count overflowing soon?
+@@ -3911,7 +3944,7 @@ void __kprobes sub_preempt_count(int val)
+ 
+ 	if (preempt_count() == val)
+ 		trace_preempt_on(CALLER_ADDR0, get_parent_ip(CALLER_ADDR1));
+-	preempt_count() -= val;
++	__sub_preempt_count(val);
+ }
+ EXPORT_SYMBOL(sub_preempt_count);
+ 
+@@ -4057,6 +4090,9 @@ asmlinkage void __sched schedule(void)
+ 
+ 		rq->nr_switches++;
+ 		rq->curr = next;
++#ifdef CONFIG_PREEMPT_COUNT_CPU
++				smp_wmb();
++#endif
+ 		++*switch_count;
+ 
+ 		context_switch(rq, prev, next); /* unlocks the rq */
+@@ -8304,7 +8340,9 @@ struct task_struct *curr_task(int cpu)
+  * set_curr_task - set the current task for a given cpu.
+  * @cpu: the processor in question.
+  * @p: the task pointer to set.
+- *
++#ifdef CONFIG_PREEMPT_COUNT_CPU
++		smp_wmb();
++#endif
+  * Description: This function must only be used when non-maskable interrupts
+  * are serviced on a separate stack. It allows the architecture to switch the
+  * notion of the current task on a cpu in a non-blocking manner. This function
+-- 
+1.7.10

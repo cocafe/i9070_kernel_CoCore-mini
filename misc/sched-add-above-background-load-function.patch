@@ -1,0 +1,53 @@
+Add above_background_load function to allow stuff to happen only when
+important stuff aint.
+
+-ck
+
+---
+ include/linux/sched.h |    1 +
+ kernel/sched_bfs.c    |   20 ++++++++++++++++++++
+ 2 files changed, 21 insertions(+)
+
+Index: linux-2.6.32-ck1/include/linux/sched.h
+===================================================================
+--- linux-2.6.32-ck1.orig/include/linux/sched.h	2009-12-10 20:18:08.737251450 +1100
++++ linux-2.6.32-ck1/include/linux/sched.h	2009-12-10 20:20:08.010251089 +1100
+@@ -144,6 +144,7 @@ extern unsigned long nr_uninterruptible(
+ extern unsigned long nr_iowait(void);
+ extern unsigned long nr_iowait_cpu(void);
+ extern unsigned long this_cpu_load(void);
++extern int above_background_load(void);
+ 
+ 
+ extern void calc_global_load(void);
+Index: linux-2.6.32-ck1/kernel/sched_bfs.c
+===================================================================
+--- linux-2.6.32-ck1.orig/kernel/sched_bfs.c	2009-12-10 20:18:08.744251069 +1100
++++ linux-2.6.32-ck1/kernel/sched_bfs.c	2009-12-10 20:20:08.013251093 +1100
+@@ -455,6 +455,26 @@ static inline void __task_grq_unlock(voi
+ 	grq_unlock();
+ }
+ 
++/*
++ * Look for any tasks *anywhere* that are running nice 0 or better. We do
++ * this lockless for overhead reasons since the occasional wrong result
++ * is harmless.
++ */
++int above_background_load(void)
++{
++	struct task_struct *cpu_curr;
++	unsigned long cpu;
++
++	for_each_online_cpu(cpu) {
++		cpu_curr = cpu_rq(cpu)->curr;
++		if (unlikely(!cpu_curr))
++			continue;
++		if (PRIO_TO_NICE(cpu_curr->static_prio) < 1)
++			return 1;
++	}
++	return 0;
++}
++
+ #ifndef __ARCH_WANT_UNLOCKED_CTXSW
+ static inline void prepare_lock_switch(struct rq *rq, struct task_struct *next)
+ {

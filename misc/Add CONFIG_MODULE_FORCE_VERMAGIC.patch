@@ -1,0 +1,50 @@
+From cc9b90767d28349f977d3c0b1e12367e435378eb Mon Sep 17 00:00:00 2001
+From: pinkflozd <lk@varjanta.com>
+Date: Thu, 22 Sep 2011 12:37:07 +0200
+Subject: [PATCH] modules: Add CONFIG_MODULE_FORCE_VERMAGIC
+
+---
+ init/Kconfig    |    8 ++++++++
+ kernel/module.c |    6 ++++++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/init/Kconfig b/init/Kconfig
+index 7a4328c..a2ed45d 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1232,6 +1232,14 @@ config MODULE_FORCE_LOAD
+ 	  --force).  Forced module loading sets the 'F' (forced) taint flag and
+ 	  is usually a really bad idea.
+ 
++config MODULE_FORCE_VERMAGIC
++	bool "Allow forced loading of modules with bad vermagic"
++	default n
++	depends on MODULE_FORCE_LOAD
++	help
++	  Allow loading of modules with version information that does not match
++	  the currently running kernel. This is very bad.
++
+ config MODULE_UNLOAD
+ 	bool "Module unloading"
+ 	help
+diff --git a/kernel/module.c b/kernel/module.c
+index 6c56282..c66d2e6 100644
+--- a/kernel/module.c
++++ b/kernel/module.c
+@@ -2232,8 +2232,14 @@ static noinline struct module *load_module(void __user *umod,
+ 	} else if (!same_magic(modmagic, vermagic, versindex)) {
+ 		printk(KERN_ERR "%s: version magic '%s' should be '%s'\n",
+ 		       mod->name, modmagic, vermagic);
++#ifdef CONFIG_MODULE_FORCE_VERMAGIC
++		err = try_to_force_load(mod, "magic");
++		if (err)
++			goto free_hdr;
++#else
+ 		err = -ENOEXEC;
+ 		goto free_hdr;
++#endif
+ 	}
+ 
+ 	staging = get_modinfo(sechdrs, infoindex, "staging");
+-- 
+1.7.10

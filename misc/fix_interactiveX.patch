@@ -1,0 +1,12 @@
+--- a/kernel/sched.c
++++ b/kernel/sched.c
+@@ -2910,6 +2910,7 @@ unsigned long
+nr_running(void)
+return sum;
+}
++EXPORT_SYMBOL_GPL(nr_running);
+
+and in drivers/cpufreq/
+cpufreq_interactive.c:185
+-cpumask_t tmp_mask = work_cpumask;
++cpumask_t *tmp_mask = &work_cpumask;

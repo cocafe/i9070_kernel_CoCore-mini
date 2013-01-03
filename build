@@ -1,0 +1,79 @@
+#!/bin/bash
+
+
+case "$1" in
+
+	# Open gedit
+	gedit)
+		echo -e "\n\n Opening Files ... \n\n"
+		gedit build.sh & 
+		gedit CoCore-mini-changelog.log & 
+		gedit u8500_CoCore_mini_defconfig & 
+		if [ -f /media/I9070MMC/Notes/TODO.txt ]
+		then
+			gedit /media/I9070MMC/Notes/TODO.txt &
+		fi;
+		;;
+
+	# Fix the mali gpu arch link
+	archgpu)
+		echo -e "\n\n Fixing Mali GPU arch-ux500 folder ...\n\n"
+		rm -rf /home/cocafe/Android/CoCore_mini/kernel/drivers/gpu/mali/mali400ko/driver/src/devicedrv/mali/arch/arch-ux500;
+		;;
+
+	# Show the log
+	catlog)
+		cat build.log | grep $2;
+		;;
+
+	# Clean the log
+	cleanlog)
+		echo -e "\n\n Cleaning build.log ...\n\n"
+		rm build.log;
+		;;
+
+	# Clean the source
+	clean)
+		. build.sh clean;
+		cd ..;
+		;;
+
+	# Remove the kernel folder
+	rmkernel)
+		echo -e "\n\n Removing CoCore_mini folder ...\n\n"
+		cd ..;
+		rm -rf CoCore_mini;
+		sync; sync
+		;;
+
+	# Generated a tar of kernel folder
+	tar)
+		TIME_START=$SECONDS
+		echo -e "\n\n Building a tar.gz of CoCore_mini folder ...\n\n"
+		cd ..;
+		tar -zcvf $2.tar.gz CoCore_mini;
+		cd CoCore_mini;
+		TIME_FINISH=$SECONDS
+		echo -e "\n\n Finished in $((TIME_FINISH-TIME_START)) Seconds\n\n"
+		;;
+
+	# Push the kernel.bin.md5 to I9070MMC
+	pushmmc)
+		echo -e "\n\n Pushing OUT folder to I9070MMC ...\n\n"
+		mkdir /media/I9070MMC/Dev_kernel/$2/;
+		cp out/kernel.bin.md5 /media/I9070MMC/Dev_kernel/$2/kernel.bin.md5;
+		ls -l /media/I9070MMC/Dev_kernel/$2/;
+		echo -e "\n \n"
+		ls -t /media/I9070MMC/Dev_kernel/ | grep out;
+		;;
+
+	# Build the kernel
+	*)
+		echo -e "\n\n Cleaning build.log ...\n\n"
+		ls -l build.log;
+		rm build.log;
+		echo -e "\n\n Building kernel with logs  ...\n"
+		. build.sh | tee -a build.log;
+		;;
+
+esac

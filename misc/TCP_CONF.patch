@@ -1,0 +1,46 @@
+From 646c0f1881f6137ef3447fe900d40972c5495e36 Mon Sep 17 00:00:00 2001
+From: DooMLoRD <metoo.mememe@gmail.com>
+Date: Tue, 24 Apr 2012 00:23:06 +0530
+Subject: [PATCH] shifted default TCP congestion algorithm to VENO
+
+---
+ kernel/arch/arm/configs/doom_xps_defconfig |   23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/kernel/arch/arm/configs/doom_xps_defconfig b/kernel/arch/arm/configs/doom_xps_defconfig
+index 76a9626..9b261d7 100644
+--- a/kernel/arch/arm/configs/doom_xps_defconfig
++++ b/kernel/arch/arm/configs/doom_xps_defconfig
+@@ -692,9 +692,28 @@ CONFIG_INET_XFRM_MODE_TRANSPORT=y
+ # CONFIG_INET_XFRM_MODE_BEET is not set
+ # CONFIG_INET_LRO is not set
+ # CONFIG_INET_DIAG is not set
+-# CONFIG_TCP_CONG_ADVANCED is not set
++CONFIG_TCP_CONG_ADVANCED=y
++# CONFIG_TCP_CONG_BIC is not set
+ CONFIG_TCP_CONG_CUBIC=y
+-CONFIG_DEFAULT_TCP_CONG="cubic"
++# CONFIG_TCP_CONG_WESTWOOD is not set
++# CONFIG_TCP_CONG_HTCP is not set
++# CONFIG_TCP_CONG_HSTCP is not set
++# CONFIG_TCP_CONG_HYBLA is not set
++# CONFIG_TCP_CONG_VEGAS is not set
++# CONFIG_TCP_CONG_SCALABLE is not set
++# CONFIG_TCP_CONG_LP is not set
++CONFIG_TCP_CONG_VENO=y
++# CONFIG_TCP_CONG_YEAH is not set
++# CONFIG_TCP_CONG_ILLINOIS is not set
++# CONFIG_DEFAULT_BIC is not set
++# CONFIG_DEFAULT_CUBIC is not set
++# CONFIG_DEFAULT_HTCP is not set
++# CONFIG_DEFAULT_HYBLA is not set
++# CONFIG_DEFAULT_VEGAS is not set
++CONFIG_DEFAULT_VENO=y
++# CONFIG_DEFAULT_WESTWOOD is not set
++# CONFIG_DEFAULT_RENO is not set
++CONFIG_DEFAULT_TCP_CONG="veno"
+ # CONFIG_TCP_MD5SIG is not set
+ CONFIG_IPV6=y
+ CONFIG_IPV6_PRIVACY=y
+-- 
+1.7.10

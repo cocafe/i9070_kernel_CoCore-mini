@@ -1,0 +1,211 @@
+From a93457a166d5b9fc4a26c6a09b8bd8e619c2134b Mon Sep 17 00:00:00 2001
+From: hayashikejinan <hayashikejinan@gmail.com>
+Date: Wed, 3 Oct 2012 14:59:56 +0900
+Subject: [PATCH] fix for GCC 4.7
+
+Signed-off-by: hayashikejinan <hayashikejinan@gmail.com>
+---
+ kernel/Makefile                              |    3 ++-
+ kernel/arch/arm/Makefile                     |    2 ++
+ kernel/arch/arm/boot/compressed/Makefile     |   15 ++++++++++++---
+ kernel/arch/arm/mach-ux500/cpu-db9500.c      |    2 +-
+ kernel/arch/arm/mach-ux500/include/mach/id.h |    2 +-
+ kernel/arch/arm/mm/alignment.c               |    4 +++-
+ kernel/fs/cifs/cifssmb.c                     |    9 ++++-----
+ kernel/fs/ecryptfs/keystore.c                |    2 +-
+ kernel/kernel/trace/trace_printk.c           |    2 +-
+ 9 files changed, 27 insertions(+), 14 deletions(-)
+
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 8118c8c..320cd2e 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -368,7 +368,8 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
+ 		   -fno-strict-aliasing -fno-common \
+ 		   -Werror-implicit-function-declaration \
+ 		   -Wno-format-security \
+-		   -fno-delete-null-pointer-checks
++		   -fno-delete-null-pointer-checks \
++		   -mtune=cortex-a9
+ KBUILD_AFLAGS_KERNEL :=
+ KBUILD_CFLAGS_KERNEL := -fgcse-lm -fgcse-sm -fsched-spec-load -fforce-addr -ffast-math -fsingle-precision-constant -mtune=cortex-a9 -march=armv7-a -mfpu=neon -ftree-vectorize -funswitch-loops
+ KBUILD_AFLAGS   := -D__ASSEMBLY__
+diff --git a/kernel/arch/arm/Makefile b/kernel/arch/arm/Makefile
+index f713559..9e7bd45 100644
+--- a/kernel/arch/arm/Makefile
++++ b/kernel/arch/arm/Makefile
+@@ -112,6 +112,8 @@ CFLAGS_MODULE	+=-fno-optimize-sibling-calls
+ endif
+ endif
+ 
++CFLAGS_MODULE	+=-fno-pic
++
+ # Need -Uarm for gcc < 3.x
+ KBUILD_CFLAGS	+=$(CFLAGS_ABI) $(CFLAGS_THUMB2) $(arch-y) $(tune-y) $(call cc-option,-mshort-load-bytes,$(call cc-option,-malignment-traps,)) -msoft-float -Uarm
+ KBUILD_AFLAGS	+=$(CFLAGS_ABI) $(AFLAGS_THUMB2) $(arch-y) $(tune-y) -include asm/unified.h -msoft-float
+diff --git a/kernel/arch/arm/boot/compressed/Makefile b/kernel/arch/arm/boot/compressed/Makefile
+index 4b94995..bc9ceae 100644
+--- a/kernel/arch/arm/boot/compressed/Makefile
++++ b/kernel/arch/arm/boot/compressed/Makefile
+@@ -16,8 +16,15 @@ endif
+ endif
+ 
+ AFLAGS_head.o += -DTEXT_OFFSET=$(TEXT_OFFSET)
++AFLAGS_head.o += -Wa,-mcpu=cortex-a9
+ HEAD	= head.o
+-OBJS	+= misc.o decompress.o
++
++AFLAGS_misc.o += -Wa,-mcpu=cortex-a9
++MISC = misc.o
++
++AFLAGS_decompress.o += -Wa,-mcpu=cortex-a9
++DECOMPRESS = decompress.o
++
+ FONTC	= $(srctree)/drivers/video/console/font_acorn_8x8.c
+ 
+ #
+@@ -102,7 +109,7 @@ endif
+ 
+ targets       := vmlinux vmlinux.lds \
+ 		 piggy.$(suffix_y) piggy.$(suffix_y).o \
+-		 font.o font.c head.o misc.o $(OBJS)
++		 font.o font.c head.o misc.o decompress.o $(OBJS)
+ 
+ # Make sure files are removed during clean
+ extra-y       += piggy.gzip piggy.lzo piggy.lzma lib1funcs.S $(libfdt) $(libfdt_hdrs)
+@@ -135,6 +142,7 @@ LDFLAGS_vmlinux += -X
+ LDFLAGS_vmlinux += -T
+ 
+ # For __aeabi_uidivmod
++AFLAGS_lib1funcs.o += -Wa,-mcpu=cortex-a9
+ lib1funcs = $(obj)/lib1funcs.o $(obj)/../../lib/lib.a
+ 
+ $(obj)/lib1funcs.S: $(srctree)/arch/$(SRCARCH)/lib/lib1funcs.S FORCE
+@@ -153,7 +161,7 @@ bad_syms=$$($(CROSS_COMPILE)nm $@ | sed -n 's/^.\{8\} [bc] \(.*\)/\1/p') && \
+   ( echo "following symbols must have non local/private scope:" >&2; \
+     echo "$$bad_syms" >&2; rm -f $@; false )
+ 
+-$(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/$(HEAD) $(obj)/piggy.$(suffix_y).o \
++$(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/$(HEAD) $(obj)/$(MISC) $(obj)/$(DECOMPRESS) $(obj)/piggy.$(suffix_y).o \
+ 	 	$(addprefix $(obj)/, $(OBJS)) $(lib1funcs) FORCE
+ 	$(call if_changed,ld)
+ 	@$(check_for_bad_syms)
+@@ -161,6 +169,7 @@ $(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/$(HEAD) $(obj)/piggy.$(suffix_y).o \
+ $(obj)/piggy.$(suffix_y): $(obj)/../Image FORCE
+ 	$(call if_changed,$(suffix_y))
+ 
++AFLAGS_piggy.$(suffix_y).o += -Wa,-mcpu=cortex-a9
+ $(obj)/piggy.$(suffix_y).o:  $(obj)/piggy.$(suffix_y) FORCE
+ 
+ CFLAGS_font.o := -Dstatic=
+diff --git a/kernel/arch/arm/mach-ux500/cpu-db9500.c b/kernel/arch/arm/mach-ux500/cpu-db9500.c
+index 1bbc9b4..4d900cb 100644
+--- a/kernel/arch/arm/mach-ux500/cpu-db9500.c
++++ b/kernel/arch/arm/mach-ux500/cpu-db9500.c
+@@ -19,7 +19,7 @@
+  * U9500 is currently using U8500v2 HW. Therefore, the platform detection
+  * is based on the kernel cmd line setting (early_param "pinsfor").
+  */
+-inline bool cpu_is_u9500()
++bool cpu_is_u9500()
+ {
+ 	if (pins_for_u9500())
+ 		return true;
+diff --git a/kernel/arch/arm/mach-ux500/include/mach/id.h b/kernel/arch/arm/mach-ux500/include/mach/id.h
+index 5f16285..d0116c1 100644
+--- a/kernel/arch/arm/mach-ux500/include/mach/id.h
++++ b/kernel/arch/arm/mach-ux500/include/mach/id.h
+@@ -65,7 +65,7 @@ static inline bool __attribute_const__ cpu_is_u5500(void)
+ }
+ 
+ #ifdef CONFIG_UX500_SOC_DB8500
+-inline bool cpu_is_u9500(void);
++bool cpu_is_u9500(void);
+ #else
+ static inline bool cpu_is_u9500(void)
+ {
+diff --git a/kernel/arch/arm/mm/alignment.c b/kernel/arch/arm/mm/alignment.c
+index 724ba3b..298aaef 100644
+--- a/kernel/arch/arm/mm/alignment.c
++++ b/kernel/arch/arm/mm/alignment.c
+@@ -824,8 +824,10 @@ static ssize_t alignment_proc_write(struct file *file, const char __user *buffer
+ 	case 0x08000000:	/* ldm or stm, or thumb-2 32bit instruction */
+ 		if (thumb2_32b)
+ 			handler = do_alignment_t32_to_handler(&instr, regs, &offset);
+-		else
++		else {
+ 			handler = do_alignment_ldmstm;
++			offset.un = 0;
++		}
+ 		break;
+ 
+ 	default:
+diff --git a/kernel/fs/cifs/cifssmb.c b/kernel/fs/cifs/cifssmb.c
+index 07132c4..458118e 100644
+--- a/kernel/fs/cifs/cifssmb.c
++++ b/kernel/fs/cifs/cifssmb.c
+@@ -5291,7 +5291,7 @@ int CIFSFindNext(const int xid, struct cifs_tcon *tcon,
+ 	param_offset = offsetof(struct smb_com_transaction2_sfi_req, Fid) - 4;
+ 	offset = param_offset + params;
+ 
+-	data_offset = (char *) (&pSMB->hdr.Protocol) + offset;
++	data_offset = (char *)pSMB + offsetof(struct smb_hdr, Protocol) + offset;
+ 
+ 	count = sizeof(FILE_BASIC_INFO);
+ 	pSMB->MaxParameterCount = cpu_to_le16(2);
+@@ -5560,7 +5560,7 @@ int CIFSFindNext(const int xid, struct cifs_tcon *tcon,
+ 		       u16 fid, u32 pid_of_opener)
+ {
+ 	struct smb_com_transaction2_sfi_req *pSMB  = NULL;
+-	FILE_UNIX_BASIC_INFO *data_offset;
++	char *data_offset;
+ 	int rc = 0;
+ 	u16 params, param_offset, offset, byte_count, count;
+ 
+@@ -5582,8 +5582,7 @@ int CIFSFindNext(const int xid, struct cifs_tcon *tcon,
+ 	param_offset = offsetof(struct smb_com_transaction2_sfi_req, Fid) - 4;
+ 	offset = param_offset + params;
+ 
+-	data_offset = (FILE_UNIX_BASIC_INFO *)
+-				((char *)(&pSMB->hdr.Protocol) + offset);
++	data_offset = (char *)pSMB + offsetof(struct smb_hdr, Protocol) + offset;
+ 	count = sizeof(FILE_UNIX_BASIC_INFO);
+ 
+ 	pSMB->MaxParameterCount = cpu_to_le16(2);
+@@ -5605,7 +5604,7 @@ int CIFSFindNext(const int xid, struct cifs_tcon *tcon,
+ 	inc_rfc1001_len(pSMB, byte_count);
+ 	pSMB->ByteCount = cpu_to_le16(byte_count);
+ 
+-	cifs_fill_unix_set_info(data_offset, args);
++	cifs_fill_unix_set_info((FILE_UNIX_BASIC_INFO *)data_offset, args);
+ 
+ 	rc = SendReceiveNoRsp(xid, tcon->ses, (struct smb_hdr *) pSMB, 0);
+ 	if (rc)
+diff --git a/kernel/fs/ecryptfs/keystore.c b/kernel/fs/ecryptfs/keystore.c
+index 89dc18e..1064d70 100644
+--- a/kernel/fs/ecryptfs/keystore.c
++++ b/kernel/fs/ecryptfs/keystore.c
+@@ -1152,7 +1152,7 @@ struct ecryptfs_parse_tag_70_packet_silly_stack {
+ 	struct ecryptfs_message *msg = NULL;
+ 	char *auth_tok_sig;
+ 	char *payload;
+-	size_t payload_len;
++	size_t payload_len = 0;
+ 	int rc;
+ 
+ 	rc = ecryptfs_get_auth_tok_sig(&auth_tok_sig, auth_tok);
+diff --git a/kernel/kernel/trace/trace_printk.c b/kernel/kernel/trace/trace_printk.c
+index 1f06468..1a5fff8 100644
+--- a/kernel/kernel/trace/trace_printk.c
++++ b/kernel/kernel/trace/trace_printk.c
+@@ -49,7 +49,7 @@ static inline struct trace_bprintk_fmt *lookup_format(const char *fmt)
+ void hold_module_trace_bprintk_format(const char **start, const char **end)
+ {
+ 	const char **iter;
+-	char *fmt;
++	char *fmt = NULL;
+ 
+ 	mutex_lock(&btrace_mutex);
+ 	for (iter = start; iter < end; iter++) {
+-- 
+1.7.10

@@ -1,0 +1,190 @@
+From e422ffb446f5308b187191dd3fe1dfdacc738536 Mon Sep 17 00:00:00 2001
+From: Nick Piggin <npiggin@kernel.dk>
+Date: Sat, 18 Dec 2010 12:46:40 +1100
+Subject: [PATCH] fs: fsync optimisations
+
+Optimise fsync by adding a datasync parameter to sync_inode_metadata to
+DTRT with writing back the inode (->write_inode in theory should have a
+datasync parameter too perhaps, but that's for another time).
+
+Also, implement the metadata sync optimally rather than reusing the
+normal data writeback path. This means less useless moving the inode around the
+writeback lists, and less dropping and retaking of inode_lock, and avoiding
+the data writeback call with nr_pages == 0.
+
+Signed-off-by: Nick Piggin <npiggin@kernel.dk>
+---
+ drivers/staging/pohmelfs/inode.c |    2 +-
+ fs/exofs/file.c                  |    2 +-
+ fs/ext2/dir.c                    |    2 +-
+ fs/ext2/inode.c                  |    2 +-
+ fs/ext2/xattr.c                  |    2 +-
+ fs/fs-writeback.c                |   41 ++++++++++++++++++++++++++++++++++++--
+ fs/libfs.c                       |    2 +-
+ fs/nfsd/vfs.c                    |    2 +-
+ include/linux/fs.h               |    2 +-
+ 9 files changed, 47 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/staging/pohmelfs/inode.c b/drivers/staging/pohmelfs/inode.c
+index 56d3a4e..1edacd0 100644
+--- a/drivers/staging/pohmelfs/inode.c
++++ b/drivers/staging/pohmelfs/inode.c
+@@ -890,7 +890,7 @@ static int pohmelfs_fsync(struct file *file, int datasync)
+ {
+ 	struct inode *inode = file->f_mapping->host;
+ 
+-	return sync_inode_metadata(inode, 1);
++	return sync_inode_metadata(inode, datasync, 1);
+ }
+ 
+ ssize_t pohmelfs_write(struct file *file, const char __user *buf,
+diff --git a/fs/exofs/file.c b/fs/exofs/file.c
+index 4c0d6ba..1f089e0 100644
+--- a/fs/exofs/file.c
++++ b/fs/exofs/file.c
+@@ -48,7 +48,7 @@ static int exofs_file_fsync(struct file *filp, int datasync)
+ 	struct inode *inode = filp->f_mapping->host;
+ 	struct super_block *sb;
+ 
+-	ret = sync_inode_metadata(inode, 1);
++	ret = sync_inode_metadata(inode, datasync, 1);
+ 
+ 	/* This is a good place to write the sb */
+ 	/* TODO: Sechedule an sb-sync on create */
+diff --git a/fs/ext2/dir.c b/fs/ext2/dir.c
+index 47cda41..60c6707 100644
+--- a/fs/ext2/dir.c
++++ b/fs/ext2/dir.c
+@@ -107,7 +107,7 @@ static int ext2_commit_chunk(struct page *page, loff_t pos, unsigned len)
+ 	if (IS_DIRSYNC(dir)) {
+ 		err = write_one_page(page, 1);
+ 		if (!err)
+-			err = sync_inode_metadata(dir, 1);
++			err = sync_inode_metadata(dir, 0, 1);
+ 	} else {
+ 		unlock_page(page);
+ 	}
+diff --git a/fs/ext2/inode.c b/fs/ext2/inode.c
+index ad0b45b..be07143 100644
+--- a/fs/ext2/inode.c
++++ b/fs/ext2/inode.c
+@@ -1203,7 +1203,7 @@ static int ext2_setsize(struct inode *inode, loff_t newsize)
+ 	inode->i_mtime = inode->i_ctime = CURRENT_TIME_SEC;
+ 	if (inode_needs_sync(inode)) {
+ 		sync_mapping_buffers(inode->i_mapping);
+-		sync_inode_metadata(inode, 1);
++		sync_inode_metadata(inode, 0, 1);
+ 	} else {
+ 		mark_inode_dirty(inode);
+ 	}
+diff --git a/fs/ext2/xattr.c b/fs/ext2/xattr.c
+index c2e4dce..02ef139 100644
+--- a/fs/ext2/xattr.c
++++ b/fs/ext2/xattr.c
+@@ -691,7 +691,7 @@ static void ext2_xattr_update_super_block(struct super_block *sb)
+ 	EXT2_I(inode)->i_file_acl = new_bh ? new_bh->b_blocknr : 0;
+ 	inode->i_ctime = CURRENT_TIME_SEC;
+ 	if (IS_SYNC(inode)) {
+-		error = sync_inode_metadata(inode, 1);
++		error = sync_inode_metadata(inode, 0, 1);
+ 		/* In case sync failed due to ENOSPC the inode was actually
+ 		 * written (only some dirty data were not) so we just proceed
+ 		 * as if nothing happened and cleanup the unused block */
+diff --git a/fs/fs-writeback.c b/fs/fs-writeback.c
+index 62bdd80..96fde5e 100644
+--- a/fs/fs-writeback.c
++++ b/fs/fs-writeback.c
+@@ -1376,13 +1376,50 @@ int sync_inode(struct inode *inode, struct writeback_control *wbc)
+  *
+  * Note: only writes the actual inode, no associated data or other metadata.
+  */
+-int sync_inode_metadata(struct inode *inode, int wait)
++int sync_inode_metadata(struct inode *inode, int datasync, int wait)
+ {
++	struct address_space *mapping = inode->i_mapping;
+ 	struct writeback_control wbc = {
+ 		.sync_mode = wait ? WB_SYNC_ALL : WB_SYNC_NONE,
+ 		.nr_to_write = 0, /* metadata-only */
+ 	};
++	unsigned dirty, mask;
++	int ret = 0;
++
++	/*
++	 * This is a similar implementation to writeback_single_inode.
++	 * Keep them in sync.
++	 */
++	spin_lock(&inode_lock);
++	if (!inode_writeback_begin(inode, wait))
++		goto out;
++
++	if (datasync)
++		mask = I_DIRTY_DATASYNC;
++	else
++		mask = I_DIRTY_SYNC | I_DIRTY_DATASYNC;
++	dirty = inode->i_state & mask;
++	if (!dirty)
++		goto out_wb_end;
++	/*
++	 * Generic write_inode doesn't distinguish between sync and datasync,
++	 * so even a datasync can clear the sync state. Filesystems which
++	 * distiguish these cases must only clear 'mask' in their metadata
++	 * sync code.
++	 */
++	inode->i_state &= ~(I_DIRTY_SYNC | I_DIRTY_DATASYNC);
++
++	spin_unlock(&inode_lock);
++	ret = write_inode(inode, &wbc);
++	spin_lock(&inode_lock);
++	if (ret)
++		inode->i_state |= dirty; /* couldn't write out inode */
+ 
+-	return sync_inode(inode, &wbc);
++out_wb_end:
++	inode_writeback_end(inode);
++
++out:
++	spin_unlock(&inode_lock);
++	return ret;
+ }
+ EXPORT_SYMBOL(sync_inode_metadata);
+diff --git a/fs/libfs.c b/fs/libfs.c
+index 2645d06..dfea85e 100644
+--- a/fs/libfs.c
++++ b/fs/libfs.c
+@@ -912,7 +912,7 @@ int generic_file_fsync(struct file *file, int datasync)
+ 	int ret;
+ 
+ 	ret = sync_mapping_buffers(inode->i_mapping);
+-	err = sync_inode_metadata(inode, 1);
++	err = sync_inode_metadata(inode, datasync, 1);
+ 	if (ret == 0)
+ 		ret = err;
+ 	return ret;
+diff --git a/fs/nfsd/vfs.c b/fs/nfsd/vfs.c
+index 435f407..afd5895 100644
+--- a/fs/nfsd/vfs.c
++++ b/fs/nfsd/vfs.c
+@@ -294,7 +294,7 @@ static int nfsd_break_lease(struct inode *inode)
+ 
+ 	if (export_ops->commit_metadata)
+ 		return export_ops->commit_metadata(inode);
+-	return sync_inode_metadata(inode, 1);
++	return sync_inode_metadata(inode, 0, 1);
+ }
+ 
+ /*
+diff --git a/include/linux/fs.h b/include/linux/fs.h
+index 52079af..a42fb95 100644
+--- a/include/linux/fs.h
++++ b/include/linux/fs.h
+@@ -1779,7 +1779,7 @@ static inline void file_accessed(struct file *file)
+ }
+ 
+ int sync_inode(struct inode *inode, struct writeback_control *wbc);
+-int sync_inode_metadata(struct inode *inode, int wait);
++int sync_inode_metadata(struct inode *inode, int datasync, int wait);
+ int inode_writeback_begin(struct inode *inode, int wait);
+ int inode_writeback_end(struct inode *inode);
+ 
+-- 
+1.7.10

@@ -1,0 +1,37 @@
+From 9c0bd491bce4ce7e933409f676bd80a9bb0c903d Mon Sep 17 00:00:00 2001
+From: LeeDroid- <leedroid.lb@gmail.com>
+Date: Thu, 20 Oct 2011 23:08:43 +0100
+Subject: [PATCH] arm: Allow CPU-supported unaligned accesses
+
+This change reconfigures the CPU to allow CPU-supported unaligned
+accesses, which are generally faster than software-only fixups,
+resulting in fewer alignment exceptions.
+
+Signed-off-by: Brent DeGraaf <bdegraaf@codeaurora.org>
+---
+ arch/arm/Kconfig |   10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/arch/arm/Kconfig b/arch/arm/Kconfig
+index eb23e57..8aecd56 100644
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -1424,6 +1424,16 @@ config ALIGNMENT_TRAP
+ 	  correct operation of some network protocols. With an IP-only
+ 	  configuration it is safe to say N, otherwise say Y.
+ 
++config ALLOW_CPU_ALIGNMENT
++	bool "Allow CPU-based alignment handling"
++	default y if ARCH_MSM_SCORPION || ARCH_MSM_SCORPIONMP
++	help
++	  Advanced ARM processors, such as the Cortex series and ARMv7-based
++	  CPUS are capable of performing unaligned accesses for many types of
++	  memory accesses.  Typically, using a cpu-based alignment fixup is
++	  faster than doing such a fixup in software.  For best performance
++	  on advanced CPUs, say Y here.
++
+ config UACCESS_WITH_MEMCPY
+ 	bool "Use kernel mem{cpy,set}() for {copy_to,clear}_user() (EXPERIMENTAL)"
+ 	depends on MMU && EXPERIMENTAL
+-- 
+1.7.10
